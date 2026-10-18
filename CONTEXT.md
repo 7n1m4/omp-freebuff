@@ -11,7 +11,11 @@ changes. Grows as wayfinder tickets resolve.
 
 - **Extension**: the in-process OMP extension that owns the Instance, the Lock
   and the Queue. Replaces the prototype's *Supervisor*: no daemon, no named pipe,
-  no process of its own, and it dies with the OMP session that loaded it.
+  no process of its own. OMP rebinds its factory **per session** — subagent
+  sessions included, each with its own tool registry and its own
+  `session_shutdown` — while module-scope state is shared process-wide, so the
+  Queue, the Lock and the Instance are **process-scoped**: they live and die with
+  the OMP process, never with a session (ADR-0004).
 - **Instance**: one running freebuff process. At most one exists per machine.
   _Avoid:_ "session" (for the process).
 - **Owner**: the process holding the Lock — an OMP session's Extension, or the
@@ -40,8 +44,9 @@ changes. Grows as wayfinder tickets resolve.
   path, hand the Task's result to the parent, and do **not** respawn; the next
   Task spawns a fresh Instance. It happens when a Task resolves under any
   Verdict, and when the Instance dies unexpectedly.
-- **Stale Lock**: a record whose `startedAt` is older than 30 minutes, or whose
-  `ownerPid` is dead. Reclaimable whatever it claims.
+- **Stale Lock**: a record whose `startedAt` is older than 30 minutes, whose
+  `ownerPid` is dead, or which names our own pid with no live Task behind it (an
+  Extension reloaded in place). Reclaimable whatever it claims.
 
 ### Work
 
@@ -56,8 +61,10 @@ changes. Grows as wayfinder tickets resolve.
 - **Target directory**: the OMP session's cwd, resolved to its **git root** (the
   raw cwd when there is no work tree), mounted at `<workspace>/repo`. Filesystem
   roots, the Workspace and its ancestors are refused.
-- **Watchdog**: the extension's own liveness guard, on `ctx.setInterval`, so it
-  trips whether or not the parent polls. Two trips: `deadline` (20 minutes from
+- **Watchdog**: the extension's own liveness guard, on a process-scoped timer the
+  Extension owns and clears — never `ctx.setInterval`, whose auto-clear belongs to
+  a session (ADR-0004) — so it trips whether or not the parent polls. Two trips:
+  `deadline` (20 minutes from
   Ack, not from queue entry) and `frozen` (no `log.jsonl` growth **and** no
   Screen change for 3 minutes, timer and ad lines stripped). A trip ends the
   Task under its Verdict, releases the Lock and kills the Instance; the respawn
@@ -72,6 +79,19 @@ changes. Grows as wayfinder tickets resolve.
   `deadline`, `frozen`, `crashed`, `no_answer`, `driver_error`, `slot_held`,
   `displaced`, `cancelled`. Only the extension decides a Task is stuck; the
   parent polls and cancels.
+- **Cancel**: the Owner's explicit stop of the active Task — the whitelisted Esc
+  and Ctrl-C, escalating to a forced kill. The Instance exits, the Task yields
+  under `cancelled`, and queued Tasks run on. _Avoid:_ "abort", "interrupt"
+  (those are OMP's: see *User interrupt*).
+- **User interrupt**: OMP's own Esc, aborting the *parent's* turn — the tool's
+  signal carries `Interrupted by user`. Not a Cancel: a Task still `submitting`
+  is cancelled, a `working` one is left running as a **Detached Task**.
+- **Detached Task**: a `working` Task whose tool call a User interrupt aborted.
+  No caller waits on it, so its answer arrives by the settle push or a later
+  `freebuff_progress` poll; it keeps its Lock, its Watchdog and its archive.
+- **Abandoned Task**: a Task whose Extension died or reloaded mid-flight — its
+  Task archive holds no terminal Verdict. Never resumed or re-pasted, reported by
+  `freebuff_status`; the human decides whether to run it again.
 - **Ack**: as in the prototype — a chat-store line naming the prompt, or the
   Screen showing the working state — with the Screen half re-cut for 0.2.29: the
   composer placeholder `Add to the current task` is the working marker and the
