@@ -36,8 +36,10 @@ changes. Grows as wayfinder tickets resolve.
   the recorded `instancePid`, delete the record, take the Workspace. Safe
   because the Hour session resumes from the config-dir record, not from the
   directory.
-- **Yield**: the Owner's behaviour when its Instance dies unexpectedly — release
-  the Lock and do **not** respawn; the next Task spawns a fresh Instance.
+- **Yield**: the Owner's act of ending its drive — release the Lock on every exit
+  path, hand the Task's result to the parent, and do **not** respawn; the next
+  Task spawns a fresh Instance. It happens when a Task resolves under any
+  Verdict, and when the Instance dies unexpectedly.
 - **Stale Lock**: a record whose `startedAt` is older than 30 minutes, or whose
   `ownerPid` is dead. Reclaimable whatever it claims.
 
@@ -54,10 +56,31 @@ changes. Grows as wayfinder tickets resolve.
 - **Target directory**: the OMP session's cwd, resolved to its **git root** (the
   raw cwd when there is no work tree), mounted at `<workspace>/repo`. Filesystem
   roots, the Workspace and its ancestors are refused.
-- **Watchdog**: as in the prototype, with one amendment — a failure (freeze,
-  crash, deadline) ends the Task, releases the Lock and kills the Instance; the
-  respawn is lazy (the next Task), never automatic (ADR-0001). Phases and
-  verdicts belong to the turn-lifecycle ticket.
+- **Watchdog**: the extension's own liveness guard, on `ctx.setInterval`, so it
+  trips whether or not the parent polls. Two trips: `deadline` (20 minutes from
+  Ack, not from queue entry) and `frozen` (no `log.jsonl` growth **and** no
+  Screen change for 3 minutes, timer and ad lines stripped). A trip ends the
+  Task under its Verdict, releases the Lock and kills the Instance; the respawn
+  is lazy (the next Task), never automatic (ADR-0001).
+- **Phase**: what a progress poll reports — `queued`, `submitting` (Lock →
+  spawn → settle → paste → Ack), `working` (Ack confirmed, turn in flight),
+  `settling` (turn end seen → read the answer, write the Task archive, release
+  the Lock), `done`, `failed`. Their sources: the extension's own step state for
+  `queued`/`submitting`/`settling`, the `log.jsonl` tail for `working`, the
+  Verdict for `done`/`failed`. _Avoid:_ "state" (the Lock's).
+- **Verdict**: the terminal classification of a Task — `ack_missing`,
+  `deadline`, `frozen`, `crashed`, `no_answer`, `driver_error`, `slot_held`,
+  `displaced`, `cancelled`. Only the extension decides a Task is stuck; the
+  parent polls and cancels.
+- **Ack**: as in the prototype — a chat-store line naming the prompt, or the
+  Screen showing the working state — with the Screen half re-cut for 0.2.29: the
+  composer placeholder `Add to the current task` is the working marker and the
+  `working · <n>s · ■ Esc` ticker is retired.
+- **Task archive**: `<plugin dir>/tasks/<taskId>/` — `meta.json` (phase log,
+  Verdict, timings, `instancePid`, model, target repo), `answer.md`
+  (`fullResponse`), `chat-messages.json` (verbatim copy), `screen.txt` (the
+  frame at settle), `stderr.log` when non-empty. Written on every settle,
+  success included.
 - **Hour session**: freebuff's one-hour usage window. **Not keyed to a
   directory** in 0.2.29 (verified 2026-10-18): a fresh process resumes an
   unexpired Hour by adopting a `freebuff-live-<pid>.json` record in the freebuff
