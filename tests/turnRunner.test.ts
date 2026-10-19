@@ -1,7 +1,15 @@
 // Ticket #18 slice 3: the turn runner's policy tier. A ScriptedDriver on a
 // VirtualClock drives every branch of the submit pipeline (CONTEXT: TurnRunner);
 // the Lock file is the real one, everything else is in-memory and virtual-time.
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -50,7 +58,10 @@ afterEach(() => {
 
 const lockPath = () => join(pluginDir, "lock.json");
 
-const newRunner = (lockDeps?: { isPidAlive?: (pid: number) => boolean; deadlineMs?: number }): TurnRunner =>
+const newRunner = (
+  lockDeps?: { isPidAlive?: (pid: number) => boolean; deadlineMs?: number },
+  driver: ScriptedDriver = scripted,
+): TurnRunner =>
   new TurnRunner({
     pluginDir,
     workspace: join(pluginDir, "ws"),
@@ -60,8 +71,8 @@ const newRunner = (lockDeps?: { isPidAlive?: (pid: number) => boolean; deadlineM
     clock,
     createDriver: async () => {
       created++;
-      scripted.started();
-      return scripted;
+      driver.started();
+      return driver;
     },
     lockDeps,
   });
@@ -294,5 +305,152 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     expect(created).toBe(0);
     expect(kindsOf()).toEqual([]);
     expect(existsSync(lockPath())).toBe(true);
+    expect(existsSync(join(pluginDir, "tasks"))).toBe(false);
+  });
+
+  // -- Task archive on every settle (#19 slice 2) ------------------------------
+
+  const archiveIds = (): string[] => {
+    const tasksPath = join(pluginDir, "tasks");
+    return existsSync(tasksPath) ? readdirSync(tasksPath).sort() : [];
+  };
+  const readArchive = (id: string): Record<string, string> => {
+    const dir = join(pluginDir, "tasks", id);
+    return Object.fromEntries(readdirSync(dir).map((file) => [file, readFileSync(join(dir, file), "utf8")]));
+  };
+  type ArchiveMeta = {
+    id: string;
+    prompt: string;
+    target: string | null;
+    model: string | null;
+    instancePid: number | null;
+    verdict: string | null;
+    phaseLog: string[];
+    timings: { startedAt: number; settledAt: number; elapsedMs: number };
+  };
+  const phaseNames = (meta: ArchiveMeta): string[] => meta.phaseLog.map((entry) => entry.split("@")[0]);
+  const expectMonotone = (meta: ArchiveMeta): void => {
+    const stamps = meta.phaseLog.map((entry) => Date.parse(entry.split("@")[1]));
+    for (const stamp of stamps) expect(stamp).not.toBeNaN();
+    for (let i = 1; i < stamps.length; i++) expect(stamps[i]).toBeGreaterThanOrEqual(stamps[i - 1]);
+  };
+
+  test("success settle writes one Task archive with the pinned file set and meta", async () => {
+    mkdirSync(join(pluginDir, "cfg"), { recursive: true });
+    writeFileSync(
+      join(pluginDir, "cfg", "freebuff-live-4242.json"),
+      JSON.stringify({ ownerPid: 4242, model: "stub-model", expiresAt: 1 }),
+    );
+    scripted.screen = "settle frame\r\n";
+    scripted.afterPaste = ackAndEnd;
+    const startedAt = clock.now();
+
+    const outcome = await drive(newRunner().run(PROMPT));
+    expect(outcome).toEqual({ ok: true, answer: ANSWER });
+
+    const ids = archiveIds();
+    expect(ids).toHaveLength(1);
+    const files = readArchive(ids[0]);
+    // No stderr.log: the scripted stderr is empty, so the file never appears.
+    expect(Object.keys(files).sort()).toEqual(["answer.md", "chat-messages.json", "meta.json", "screen.txt"]);
+    const meta = JSON.parse(files["meta.json"]) as ArchiveMeta;
+    expect(meta.id).toBe(ids[0]);
+    expect(meta.prompt).toBe(PROMPT);
+    expect(meta.verdict).toBeNull();
+    expect(meta.instancePid).toBe(4242);
+    expect(meta.model).toBe("stub-model");
+    expect(meta.target).toBeNull();
+    expect(phaseNames(meta)).toEqual(["submitting", "working", "settling", "done"]);
+    expectMonotone(meta);
+    expect(meta.timings.startedAt).toBe(startedAt);
+    expect(meta.timings.settledAt).toBe(Date.parse(meta.phaseLog[3].split("@")[1]));
+    expect(meta.timings.elapsedMs).toBe(meta.timings.settledAt - meta.timings.startedAt);
+    expect(files["answer.md"]).toBe(ANSWER);
+    expect(files["screen.txt"]).toBe("settle frame\r\n");
+    expect(files["chat-messages.json"]).toBe(scripted.logText);
+  });
+
+  test("non-empty driver stderr lands in stderr.log verbatim", async () => {
+    scripted.stderr = "boom\r\n";
+    scripted.afterPaste = ackAndEnd;
+
+    const outcome = await drive(newRunner().run(PROMPT));
+    expect(outcome).toEqual({ ok: true, answer: ANSWER });
+
+    const [id] = archiveIds();
+    expect(readArchive(id)["stderr.log"]).toBe("boom\r\n");
+  });
+
+  test.each([
+    ["ack_missing", ["submitting", "failed"]],
+    ["slot_held", ["submitting", "failed"]],
+  ] as const)("failed settle (%s) archives with the Verdict and only the phases reached", async (verdict, expectedPhases) => {
+    const runner = newRunner();
+    if (verdict === "slot_held") scripted.settle = { ok: false, reason: "slot_held", excerpt: "held frame" };
+
+    const outcome = await drive(runner.run(PROMPT));
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.verdict).toBe(verdict);
+
+    const ids = archiveIds();
+    expect(ids).toHaveLength(1);
+    const files = readArchive(ids[0]);
+    const meta = JSON.parse(files["meta.json"]) as ArchiveMeta;
+    expect(meta.verdict).toBe(verdict);
+    expect(meta.model).toBeNull();
+    expect(meta.instancePid).toBe(4242);
+    expect(phaseNames(meta)).toEqual([...expectedPhases]);
+    expectMonotone(meta);
+    expect(files["answer.md"]).toBe("");
+    expect(Object.keys(files)).not.toContain("stderr.log");
+  });
+
+  test("a second settle adds an archive and never touches the first", async () => {
+    scripted.afterPaste = ackAndEnd;
+    const runner = newRunner();
+    await drive(runner.run(PROMPT));
+    const [first] = archiveIds();
+    const before = readArchive(first);
+
+    scripted.settle = { ok: true, state: "ready" };
+    scripted.events = [];
+    await drive(runner.run(PROMPT));
+
+    expect(archiveIds()).toHaveLength(2);
+    expect(readArchive(first)).toEqual(before);
+  });
+
+  test("a driver whose capture accessors throw still settles with the outcome untouched", async () => {
+    class BrokenCaptureDriver extends ScriptedDriver {
+      override async screenText(): Promise<string> {
+        throw new Error("screen broken");
+      }
+
+      override chatLog(): string {
+        throw new Error("chat broken");
+      }
+
+      override stderrText(): string {
+        throw new Error("stderr broken");
+      }
+    }
+    const broken = new BrokenCaptureDriver(clockSleep(clock));
+    broken.afterPaste = () => {
+      broken.ack(PROMPT);
+      broken.endTurn(ANSWER);
+    };
+
+    const outcome = await drive(newRunner(undefined, broken).run(PROMPT));
+    expect(outcome).toEqual({ ok: true, answer: ANSWER });
+
+    const ids = archiveIds();
+    expect(ids).toHaveLength(1);
+    const files = readArchive(ids[0]);
+    expect(Object.keys(files).sort()).toEqual(["answer.md", "chat-messages.json", "meta.json", "screen.txt"]);
+    expect(files["screen.txt"]).toBe("");
+    expect(files["chat-messages.json"]).toBe("");
+    const meta = JSON.parse(files["meta.json"]) as ArchiveMeta;
+    expect(meta.verdict).toBeNull();
+    expect(phaseNames(meta)).toEqual(["submitting", "working", "settling", "done"]);
   });
 });

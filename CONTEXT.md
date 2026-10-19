@@ -55,7 +55,7 @@ changes. Grows as wayfinder tickets resolve.
   session-derived; its basename is freebuff's chat-store key. It is the
   Instance's stable cwd, not the Hour session's identity.
 - **Plugin directory**: `%LOCALAPPDATA%\freebuff-plugin\` — the Lock, the error
-  log, screen dumps, and the Workspace.
+  log, screen dumps, the Task archive, and the Workspace.
 - **Junction**: the `repo` link inside the Workspace, pointing at the Target
   directory. Swapped only while no Task runs.
 - **Target directory**: the OMP session's cwd, resolved to its **git root** (the

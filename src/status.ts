@@ -1,7 +1,7 @@
-// freebuff_status: the Lock's state, the Instance pid, the current junction Target
-// and freebuff's own live-slot records, so a human sees who holds the account's
-// slot (ADR-0001). Queue depth, archive and Hour-session fields belong to
-// later tickets; nothing here is a placeholder.
+// freebuff_status: the Lock's state, the Instance pid, the current junction Target,
+// freebuff's own live-slot records and the Task archive summary, so a human sees
+// who holds the account's slot (ADR-0001). Queue depth and Hour-session fields
+// belong to later tickets; nothing here is a placeholder.
 import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ import {
   type LockKind,
   type LockState,
 } from "./lock";
+import { archiveSummary } from "./archive";
 import { readJunctionTarget, workspaceDir } from "./workspace";
 
 export function defaultFreebuffConfigDir(): string {
@@ -68,6 +69,7 @@ export interface StatusResult {
   instancePid?: number;
   target?: string;
   foreign: { live: { pid: number; model: string; expiresAt: number }[] };
+  archive: { count: number; totalBytes: number; newestId?: string };
 }
 
 export function freebuffStatus(
@@ -97,6 +99,7 @@ export function freebuffStatus(
       isPidAlive: opts.isPidAlive,
       ownInstancePid: instancePid,
     }),
+    archive: archiveSummary(opts.pluginDir),
   };
   if (instancePid !== undefined) status.instancePid = instancePid;
   if (target !== undefined) status.target = target;

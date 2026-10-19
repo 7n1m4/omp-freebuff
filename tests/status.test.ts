@@ -1,12 +1,13 @@
 // Ticket #17 slice 3: freebuff_status (ADR-0001 §5). Proves AC #6 (Lock state,
 // Instance pid, Target, foreign live holders, with dead/expired/malformed/own
 // records filtered) and AC #7 (nothing this owner did not start is ever killed).
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { defaultFreebuffConfigDir, freebuffStatus, readForeignHolders } from "../src/status";
 import { writeLock } from "../src/lock";
+import { writeTaskArchive } from "../src/archive";
 import { ensureJunction } from "../src/workspace";
 
 let pluginDir: string;
@@ -38,6 +39,13 @@ const deps = (alive: number[] = [], extra?: { hasLiveTask?: () => boolean; ownIn
     ...extra,
   };
 };
+
+// Ground truth for the status size total: every byte under dir, per the fs.
+const bytesOnDisk = (dir: string): number =>
+  readdirSync(dir, { withFileTypes: true }).reduce((total, entry) => {
+    const path = join(dir, entry.name);
+    return total + (entry.isDirectory() ? bytesOnDisk(path) : statSync(path).size);
+  }, 0);
 
 describe("defaultFreebuffConfigDir", () => {
   test("is the manicode dir under the home directory, path only (AC #6)", () => {
@@ -87,7 +95,11 @@ describe("readForeignHolders", () => {
 describe("freebuffStatus", () => {
   test("free Lock and no Workspace: no record fields, no target (AC #6)", () => {
     const status = freebuffStatus({ pluginDir, freebuffConfigDir: configDir, ...deps() });
-    expect(status).toEqual({ lock: { state: "free" }, foreign: { live: [] } });
+    expect(status).toEqual({
+      lock: { state: "free" },
+      foreign: { live: [] },
+      archive: { count: 0, totalBytes: 0 },
+    });
   });
 
   test("reports the junction Target normalized, undefined when absent (AC #6)", () => {
@@ -152,6 +164,37 @@ describe("freebuffStatus", () => {
     expect(status.foreign).toEqual({
       live: [{ pid: process.pid, model: "glm-5.3-flash", expiresAt: NOW + 60_000 }],
     });
+  });
+
+  test("reports Task archive count, totalBytes and newestId", () => {
+    const write = (now: number, answer: string) =>
+      writeTaskArchive({
+        pluginDir,
+        now,
+        prompt: "p",
+        target: null,
+        model: "m",
+        instancePid: null,
+        verdict: null,
+        phaseLog: [],
+        startedAt: now - 1000,
+        answer,
+        chatMessages: "{}",
+        screen: "screen",
+        stderr: "",
+      });
+    const older = write(NOW, "first answer");
+    const newer = write(NOW + 1000, "second answer, deliberately longer");
+
+    const status = freebuffStatus({ pluginDir, freebuffConfigDir: configDir, ...deps() });
+
+    // On-disk bytes are the source of truth for the size total.
+    expect(status.archive).toEqual({
+      count: 2,
+      totalBytes: bytesOnDisk(pluginDir),
+      newestId: newer.taskId,
+    });
+    expect(newer.taskId > older.taskId).toBe(true);
   });
 
   test("kills nothing: held-by-other plus foreign live holders, zero killPid calls (AC #7)", () => {

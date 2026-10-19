@@ -3,7 +3,7 @@
 // only. The stub command is injected; the real freebuff CLI is never spawned.
 // Integration tier: the subject is a real PTY child process, so deterministic
 // virtual time cannot drive it and every wait is a bounded poll.
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -265,9 +265,98 @@ describe("blocking Task path over the stub child", () => {
         );
         expect(failure).toBeInstanceOf(LockBusyError);
         expect(existsSync(h.inputLog)).toBe(false);
+        expect(existsSync(join(h.pluginDir, "tasks"))).toBe(false);
       } finally {
         holder.kill();
       }
+    },
+    30_000,
+  );
+
+  // -- Task archive on every settle (#19 slice 2) ------------------------------
+
+  test(
+    "success settle archives the pinned file set with the verbatim prompt and answer",
+    async () => {
+      const h = harness("happy");
+      cleanup = h.dispose;
+      const outcome = await h.runner.run(PROMPT);
+      expect(outcome).toEqual({ ok: true, answer: ANSWER });
+
+      const tasks = join(h.pluginDir, "tasks");
+      const ids = readdirSync(tasks).sort();
+      expect(ids).toHaveLength(1);
+      const archive = join(tasks, ids[0]);
+      // No stderr.log: ConPTY merges the child's stderr into the PTY stream,
+      // so the real driver never reports a separable one.
+      expect(readdirSync(archive).sort()).toEqual(["answer.md", "chat-messages.json", "meta.json", "screen.txt"]);
+      const meta = JSON.parse(readFileSync(join(archive, "meta.json"), "utf8"));
+      expect(meta.id).toBe(ids[0]);
+      expect(meta.prompt).toBe(PROMPT);
+      expect(meta.verdict).toBeNull();
+      expect(meta.instancePid).toBeGreaterThan(0);
+      expect(meta.phaseLog.map((entry: string) => entry.split("@")[0])).toEqual([
+        "submitting",
+        "working",
+        "settling",
+        "done",
+      ]);
+      expect(readFileSync(join(archive, "answer.md"), "utf8")).toBe(ANSWER);
+      expect(readFileSync(join(archive, "screen.txt"), "utf8").length).toBeGreaterThan(0);
+      expect(readFileSync(join(archive, "chat-messages.json"), "utf8").length).toBeGreaterThan(0);
+      await h.runner.dispose();
+      await h.runner.dispose();
+    },
+    30_000,
+  );
+
+  test(
+    "failed settle archives the Verdict without an answer",
+    async () => {
+      const h = harness("no-ack");
+      cleanup = h.dispose;
+      const outcome = await h.runner.run(PROMPT);
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.verdict).toBe("ack_missing");
+
+      const tasks = join(h.pluginDir, "tasks");
+      const ids = readdirSync(tasks).sort();
+      expect(ids).toHaveLength(1);
+      const archive = join(tasks, ids[0]);
+      const meta = JSON.parse(readFileSync(join(archive, "meta.json"), "utf8"));
+      expect(meta.verdict).toBe("ack_missing");
+      expect(meta.prompt).toBe(PROMPT);
+      expect(meta.phaseLog.map((entry: string) => entry.split("@")[0])).toEqual(["submitting", "failed"]);
+      expect(readFileSync(join(archive, "answer.md"), "utf8")).toBe("");
+      expect(readdirSync(archive)).not.toContain("stderr.log");
+      await h.runner.dispose();
+      await h.runner.dispose();
+    },
+    30_000,
+  );
+
+  test(
+    "a second settle adds an archive and never rewrites the first",
+    async () => {
+      const h = harness("happy");
+      cleanup = h.dispose;
+      expect((await h.runner.run(PROMPT)).ok).toBe(true);
+
+      const tasks = join(h.pluginDir, "tasks");
+      const [first] = readdirSync(tasks).sort();
+      const before = readdirSync(join(tasks, first)).map((file) => [
+        file,
+        readFileSync(join(tasks, first, file), "utf8"),
+      ]);
+
+      expect((await h.runner.run(PROMPT)).ok).toBe(true);
+
+      expect(readdirSync(tasks).sort()).toHaveLength(2);
+      expect(readdirSync(join(tasks, first)).map((file) => [file, readFileSync(join(tasks, first, file), "utf8")])).toEqual(
+        before,
+      );
+      await h.runner.dispose();
+      await h.runner.dispose();
     },
     30_000,
   );

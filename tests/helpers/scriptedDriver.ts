@@ -42,6 +42,10 @@ export class ScriptedDriver implements DriverLike {
   // -- store simulation: one chat dir, appended to by the hooks ---------------
   dirName = "chat-0";
   logText = "";
+  // Archive inputs the runner reads best-effort after every settle: chatLog
+  // mirrors the real driver's turn-dir concatenation, stderr stands in for a
+  // separable stderr (ConPTY merges it in production, so it defaults empty).
+  stderr = "";
 
   constructor(private readonly doSleep: (ms: number) => Promise<void>) {}
 
@@ -124,6 +128,14 @@ export class ScriptedDriver implements DriverLike {
 
   turnEndSince(baseline: TurnBaseline) {
     return detectTurnEnd(this.snapshot(), baseline);
+  }
+
+  chatLog(_baseline: TurnBaseline | null): string {
+    return this.logText;
+  }
+
+  stderrText(): string {
+    return this.stderr;
   }
 
   async cancelActive(): Promise<void> {

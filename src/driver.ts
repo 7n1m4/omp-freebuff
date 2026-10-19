@@ -90,6 +90,10 @@ export interface DriverLike {
   turnEndSince(baseline: TurnBaseline): TurnEndResult;
   cancelActive(): Promise<void>;
   kill(): void;
+  /** Verbatim chat-store logs of the Turn: the baseline dir plus every newer dir, chronological, for the Task archive. */
+  chatLog?(baseline: TurnBaseline | null): string;
+  /** Separable child stderr for the archive's stderr.log; a driver whose PTY merges stderr into the screen omits it. */
+  stderrText?(): string;
 }
 
 // Bracketed paste: a newline inside never submits early; one Enter after the
@@ -268,6 +272,24 @@ export class FreebuffDriver implements DriverLike {
   turnEndSince(baseline: TurnBaseline): TurnEndResult {
     return detectTurnEnd(this.chats(), baseline);
   }
+
+  // The archive's verbatim chat log: the baseline dir plus every dir newer than
+  // it, which is the set ackSince scans because freebuff rotates dirs per chat,
+  // oldest first; with no baseline yet, the whole store.
+  chatLog(baseline: TurnBaseline | null): string {
+    const snaps = this.chats();
+    const base = baseline === null ? undefined : snaps.find((snap) => snap.dirName === baseline.dirName);
+    return snaps
+      .filter((snap) => base === undefined || snap === base || byNewest(snap, base) < 0)
+      .sort(byNewest)
+      .reverse()
+      .map((snap) => snap.logText)
+      .join("");
+  }
+
+  // No stderrText(): ConPTY merges the child's stderr into the one PTY stream,
+  // so there is no separable stderr to capture. Those bytes already surface in
+  // the Screen, and the Task archive simply carries no stderr.log.
 
   // Esc first — the TUI's own cancel; then the Ctrl-C escalation; then the
   // forced kill. A key that lands after the child died is consumed by the

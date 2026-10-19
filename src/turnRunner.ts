@@ -5,6 +5,9 @@
 // killed and dropped, and the next Task starts fresh. The deadline/frozen/
 // cancelled verdicts belong to the watchdog (#21) — every timer here already
 // goes through the injected Clock so they slide in without re-cutting.
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { writeTaskArchive } from "./archive";
 import {
   DEFAULT_DRIVER_TIMINGS,
   FreebuffDriver,
@@ -17,6 +20,7 @@ import { withLock, type LockDeps } from "./lock";
 import { COUNTDOWN_REGEX, END_SESSION } from "./protocol/markers";
 import { classifyScreen, EXCERPT_LINES, screenExcerpt } from "./protocol/screen";
 import type { TurnBaseline } from "./protocol/chatStore";
+import { readJunctionTarget } from "./workspace";
 
 // The nine-set from CONTEXT; deadline/frozen/cancelled are produced only by the
 // watchdog ticket, never by this runner.
@@ -83,6 +87,7 @@ export class TurnRunner {
 
   async run(prompt: string): Promise<TurnOutcome> {
     // LockBusyError (cross-Owner contention) propagates: a caller mistake, not a Task verdict.
+    const startedAt = this.clock.now();
     return await withLock(
       this.options.pluginDir,
       "extension",
@@ -95,11 +100,22 @@ export class TurnRunner {
         hasLiveTask: this.options.lockDeps?.hasLiveTask,
         deadlineMs: this.options.lockDeps?.deadlineMs,
       },
-      (lock) => this.runLocked(prompt, lock),
+      (lock) => this.runLocked(prompt, lock, startedAt),
     );
   }
 
-  private async runLocked(prompt: string, lock: { setInstancePid(pid: number): void }): Promise<TurnOutcome> {
+  private async runLocked(
+    prompt: string,
+    lock: { setInstancePid(pid: number): void },
+    startedAt: number,
+  ): Promise<TurnOutcome> {
+    const phases: string[] = [];
+    // The Turn's chat dirs are named by the baseline, which only exists once taken.
+    let baseline: TurnBaseline | null = null;
+    const phase = (name: string): void => {
+      phases.push(`${name}@${new Date(this.clock.now()).toISOString()}`);
+    };
+    phase("submitting");
     try {
       // 1. Instance: reuse the live one, else spawn. The record names the pid
       // only once the child exists (ADR-0001: it goes down null before that).
@@ -115,14 +131,17 @@ export class TurnRunner {
       const settled = await driver.waitSettled({});
       if (!settled.ok) {
         const excerpt = settled.excerpt;
-        this.dropDriver();
+        let outcome: TurnOutcome;
         if (settled.reason === "slot_held") {
-          return { ok: false, verdict: "slot_held", message: "the Hour slot is held by another window", screenExcerpt: excerpt };
+          outcome = { ok: false, verdict: "slot_held", message: "the Hour slot is held by another window", screenExcerpt: excerpt };
+        } else if (settled.reason === "displaced") {
+          outcome = { ok: false, verdict: "displaced", message: "the Instance was displaced; no keystrokes sent", screenExcerpt: excerpt };
+        } else {
+          outcome = { ok: false, verdict: "driver_error", message: `settle failed: ${settled.reason}`, screenExcerpt: excerpt };
         }
-        if (settled.reason === "displaced") {
-          return { ok: false, verdict: "displaced", message: "the Instance was displaced; no keystrokes sent", screenExcerpt: excerpt };
-        }
-        return { ok: false, verdict: "driver_error", message: `settle failed: ${settled.reason}`, screenExcerpt: excerpt };
+        await this.writeArchive(prompt, startedAt, phases, baseline, outcome);
+        this.dropDriver();
+        return outcome;
       }
       const reused = settled.state === "ready";
 
@@ -130,7 +149,7 @@ export class TurnRunner {
       if (reused) await driver.startNewConversation();
 
       // 4-5. Baseline, then the prompt as one bracketed paste.
-      const baseline: TurnBaseline = driver.baseline();
+      baseline = driver.baseline();
       await driver.pastePrompt(prompt);
 
       // 6-7. Two ack windows; the draft Enter substitutes for the re-paste, since
@@ -143,45 +162,136 @@ export class TurnRunner {
       }
       if (!acked) {
         await driver.cancelActive();
-        const excerpt = await this.excerptOf(driver);
-        this.dropDriver();
-        return {
+        const outcome: TurnOutcome = {
           ok: false,
           verdict: "ack_missing",
           message: "no ack within two windows; the submit was cancelled",
-          screenExcerpt: excerpt,
+          screenExcerpt: await this.excerptOf(driver),
         };
+        await this.writeArchive(prompt, startedAt, phases, baseline, outcome);
+        this.dropDriver();
+        return outcome;
       }
+      phase("working");
 
       // 8. Turn end. No deadline here — the watchdog (#21) owns it and polls the
       // same two signals: death and the chat-store end line.
       for (;;) {
         if (!driver.alive()) {
-          const excerpt = await this.excerptOf(driver);
+          const outcome: TurnOutcome = {
+            ok: false,
+            verdict: "crashed",
+            message: "freebuff exited mid-turn",
+            screenExcerpt: await this.excerptOf(driver),
+          };
+          await this.writeArchive(prompt, startedAt, phases, baseline, outcome);
           this.dropDriver();
-          return { ok: false, verdict: "crashed", message: "freebuff exited mid-turn", screenExcerpt: excerpt };
+          return outcome;
         }
         const end = driver.turnEndSince(baseline);
         if (end.done) {
-          if (end.answer !== null) return { ok: true, answer: end.answer };
-          return {
+          phase("settling");
+          if (end.answer !== null) {
+            const outcome: TurnOutcome = { ok: true, answer: end.answer };
+            await this.writeArchive(prompt, startedAt, phases, baseline, outcome);
+            return outcome;
+          }
+          const outcome: TurnOutcome = {
             ok: false,
             verdict: "no_answer",
             message: "the turn ended without an answer",
             screenExcerpt: await this.excerptOf(driver),
           };
+          await this.writeArchive(prompt, startedAt, phases, baseline, outcome);
+          return outcome;
         }
         await this.sleep(this.timings.pollMs);
       }
     } catch (error) {
       // No errors cross this seam: a mid-submit death is a crash, everything
       // else a driver error. The instance is never respawned inside a run.
+      const outcome: TurnOutcome =
+        error instanceof FreebuffDriverError && error.reason === "process_exited"
+          ? { ok: false, verdict: "crashed", message: messageOf(error) }
+          : { ok: false, verdict: "driver_error", message: messageOf(error) };
+      await this.writeArchive(prompt, startedAt, phases, baseline, outcome);
       this.dropDriver();
-      if (error instanceof FreebuffDriverError && error.reason === "process_exited") {
-        return { ok: false, verdict: "crashed", message: messageOf(error) };
-      }
-      return { ok: false, verdict: "driver_error", message: messageOf(error) };
+      return outcome;
     }
+  }
+
+  // The settling phase's Task archive write, on every settle, success included
+  // (ADR-0003; a Task dropped by LockBusyError never got here, so it archives
+  // nothing). All capture reads happen while the driver is still held: every
+  // failure path drops it only after this returns. The write is best-effort the
+  // way writeScreenDump is: an archive failure must never become a Task
+  // failure, so the outcome leaves untouched.
+  private async writeArchive(
+    prompt: string,
+    startedAt: number,
+    phases: string[],
+    baseline: TurnBaseline | null,
+    outcome: TurnOutcome,
+  ): Promise<void> {
+    const driver = this.driver;
+    let chatMessages = "";
+    try {
+      chatMessages = driver?.chatLog?.(baseline) ?? "";
+    } catch {
+      // Archive input unavailable; the empty file beats a failed settle.
+    }
+    let stderr = "";
+    try {
+      stderr = driver?.stderrText?.() ?? "";
+    } catch {
+      // Same best-effort policy as the chat read above.
+    }
+    const screen = await this.screenOf(driver);
+    try {
+      const now = this.clock.now();
+      const instancePid = driver?.pid() ?? null;
+      writeTaskArchive({
+        pluginDir: this.options.pluginDir,
+        now,
+        prompt,
+        target: readJunctionTarget(this.options.workspace) ?? null,
+        model: this.modelOf(instancePid),
+        instancePid,
+        verdict: outcome.ok ? null : outcome.verdict,
+        phaseLog: [...phases, `${outcome.ok ? "done" : "failed"}@${new Date(now).toISOString()}`],
+        startedAt,
+        answer: outcome.ok ? outcome.answer : "",
+        chatMessages,
+        screen,
+        stderr,
+      });
+    } catch {
+      // The Verdict outranks the archive; a failed write changes nothing.
+    }
+  }
+
+  // The live-slot record naming this pid carries the model the Instance runs;
+  // no record or an unreadable store reads as null. Same freebuff-live-*.json
+  // family readForeignHolders watches for foreign holders.
+  private modelOf(instancePid: number | null): string | null {
+    if (instancePid === null) return null;
+    try {
+      for (const name of readdirSync(this.options.freebuffConfigDir)) {
+        if (!name.startsWith("freebuff-live-") || !name.endsWith(".json")) continue;
+        try {
+          const record = JSON.parse(readFileSync(join(this.options.freebuffConfigDir, name), "utf8")) as {
+            ownerPid?: unknown;
+            model?: unknown;
+          };
+          if (record.ownerPid === instancePid && typeof record.model === "string") return record.model;
+        } catch {
+          // A torn record skips; another may match.
+        }
+      }
+    } catch {
+      // No readable store: no model.
+    }
+    return null;
   }
 
   // One ack window: a chat-store line naming the prompt or a working screen
@@ -238,12 +348,18 @@ export class TurnRunner {
     driver?.kill();
   }
 
-  private async excerptOf(driver: DriverLike): Promise<string> {
+  // Tolerant full-screen read: a dead or broken driver archives an empty screen
+  // instead of failing the settle.
+  private async screenOf(driver: DriverLike | null): Promise<string> {
     try {
-      return screenExcerpt(await driver.screenText(), EXCERPT_LINES);
+      return driver === null ? "" : await driver.screenText();
     } catch {
       return "";
     }
+  }
+
+  private async excerptOf(driver: DriverLike): Promise<string> {
+    return screenExcerpt(await this.screenOf(driver), EXCERPT_LINES);
   }
 
   private sleep(ms: number): Promise<void> {
