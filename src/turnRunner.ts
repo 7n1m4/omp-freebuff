@@ -92,9 +92,14 @@ export class TurnRunner {
     this.clock = options.clock ?? realClock;
   }
 
-  async run(prompt: string): Promise<TurnOutcome> {
+  async run(
+    prompt: string,
+    override?: { taskId?: string; onPhase?: (phase: TurnPhase) => void },
+  ): Promise<TurnOutcome> {
     // LockBusyError (cross-Owner contention) propagates: a caller mistake, not a Task verdict.
     const startedAt = this.clock.now();
+    const taskId = override?.taskId ?? this.options.taskId;
+    const onPhase = override?.onPhase ?? this.options.onPhase;
     return await withLock(
       this.options.pluginDir,
       "extension",
@@ -107,7 +112,7 @@ export class TurnRunner {
         hasLiveTask: this.options.lockDeps?.hasLiveTask,
         deadlineMs: this.options.lockDeps?.deadlineMs,
       },
-      (lock) => this.runLocked(prompt, lock, startedAt),
+      (lock) => this.runLocked(prompt, lock, startedAt, taskId, onPhase),
     );
   }
 
@@ -127,6 +132,8 @@ export class TurnRunner {
     prompt: string,
     lock: { setInstancePid(pid: number): void },
     startedAt: number,
+    taskId: string | undefined,
+    onPhase: ((phase: TurnPhase) => void) | undefined,
   ): Promise<TurnOutcome> {
     const phases: string[] = [];
     // The Turn's chat dirs are named by the baseline, which only exists once taken.
@@ -134,7 +141,7 @@ export class TurnRunner {
     const phase = (name: TurnPhase): void => {
       phases.push(`${name}@${new Date(this.clock.now()).toISOString()}`);
       try {
-        this.options.onPhase?.(name);
+        onPhase?.(name);
       } catch {
         // Contained: a throwing observer must not fail the Turn.
       }
@@ -163,7 +170,7 @@ export class TurnRunner {
         } else {
           outcome = { ok: false, verdict: "driver_error", message: `settle failed: ${settled.reason}`, screenExcerpt: excerpt };
         }
-        await this.writeArchive(prompt, startedAt, phases, baseline, outcome);
+        await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
         this.dropDriver();
         return outcome;
       }
@@ -192,7 +199,7 @@ export class TurnRunner {
           message: "no ack within two windows; the submit was cancelled",
           screenExcerpt: await this.excerptOf(driver),
         };
-        await this.writeArchive(prompt, startedAt, phases, baseline, outcome);
+        await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
         this.dropDriver();
         return outcome;
       }
@@ -208,7 +215,7 @@ export class TurnRunner {
             message: "freebuff exited mid-turn",
             screenExcerpt: await this.excerptOf(driver),
           };
-          await this.writeArchive(prompt, startedAt, phases, baseline, outcome);
+          await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
           this.dropDriver();
           return outcome;
         }
@@ -217,7 +224,7 @@ export class TurnRunner {
           phase("settling");
           if (end.answer !== null) {
             const outcome: TurnOutcome = { ok: true, answer: end.answer };
-            await this.writeArchive(prompt, startedAt, phases, baseline, outcome);
+            await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
             return outcome;
           }
           const outcome: TurnOutcome = {
@@ -226,7 +233,7 @@ export class TurnRunner {
             message: "the turn ended without an answer",
             screenExcerpt: await this.excerptOf(driver),
           };
-          await this.writeArchive(prompt, startedAt, phases, baseline, outcome);
+          await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
           return outcome;
         }
         await this.sleep(this.timings.pollMs);
@@ -238,7 +245,7 @@ export class TurnRunner {
         error instanceof FreebuffDriverError && error.reason === "process_exited"
           ? { ok: false, verdict: "crashed", message: messageOf(error) }
           : { ok: false, verdict: "driver_error", message: messageOf(error) };
-      await this.writeArchive(prompt, startedAt, phases, baseline, outcome);
+      await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
       this.dropDriver();
       return outcome;
     }
@@ -256,6 +263,7 @@ export class TurnRunner {
     phases: string[],
     baseline: TurnBaseline | null,
     outcome: TurnOutcome,
+    taskId: string | undefined,
   ): Promise<string | undefined> {
     const driver = this.driver;
     let chatMessages = "";
@@ -276,7 +284,7 @@ export class TurnRunner {
       const instancePid = driver?.pid() ?? null;
       const { archivePath } = writeTaskArchive({
         pluginDir: this.options.pluginDir,
-        taskId: this.options.taskId,
+        taskId,
         now,
         prompt,
         target: readJunctionTarget(this.options.workspace) ?? null,
