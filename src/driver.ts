@@ -86,6 +86,8 @@ export interface DriverLike {
   startNewConversation(): Promise<void>;
   waitSettled(opts: { readyMs?: number }): Promise<SettleOutcome>;
   baseline(): TurnBaseline;
+  /** Current bytes of the newest chat dir's log — the watchdog's store-growth signal; 0 when no chat dir exists. */
+  logSize(): number;
   ackSince(baseline: TurnBaseline, prompt: string): boolean;
   turnEndSince(baseline: TurnBaseline): TurnEndResult;
   cancelActive(): Promise<void>;
@@ -255,6 +257,11 @@ export class FreebuffDriver implements DriverLike {
   baseline(): TurnBaseline {
     const newest = newestChatDir(this.chats());
     return newest === null ? { dirName: "", logBytes: 0 } : { dirName: newest.dirName, logBytes: newest.logBytes };
+  }
+
+  // The watchdog's store-growth signal; the same read the baseline takes, newest dir only.
+  logSize(): number {
+    return newestChatDir(this.chats())?.logBytes ?? 0;
   }
 
   // The baseline dir plus every dir newer than it (freebuff rotates dirs per

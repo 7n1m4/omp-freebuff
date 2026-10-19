@@ -35,6 +35,7 @@ let owner: OwnerBinding;
 let onCreated: (driver: ScriptedDriver) => void;
 let driverFactory: () => ScriptedDriver;
 let lockDepsOverride: TurnRunnerOptions["lockDeps"];
+let watchdogOverride: TurnRunnerOptions["watchdog"];
 let paintTickMsOverride: number | undefined;
 
 const clockSleep = (virtual: VirtualClock) => (ms: number) => {
@@ -68,6 +69,7 @@ beforeEach(() => {
   onCreated = () => {};
   driverFactory = () => new ScriptedDriver(clockSleep(clock));
   lockDepsOverride = undefined;
+  watchdogOverride = undefined;
   paintTickMsOverride = undefined;
   resetFreebuffForTests();
 });
@@ -95,6 +97,7 @@ const sing = (): FreebuffSingleton =>
       timings: TIMINGS,
       clock,
       lockDeps: lockDepsOverride ?? { deadlineMs: 5_000 },
+      watchdog: watchdogOverride,
       createDriver: async () => {
         const driver = newDriver();
         driver.started();
@@ -253,7 +256,9 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
       drivers[0].ack(PROMPT);
       drivers[0].endTurn(ANSWER);
     };
-    await clock.advance(50);
+    // Settling now ends with the watcher's final screen scan plus the archive
+    // read, two slow reads on this driver, so give the tail 150ms.
+    await clock.advance(150);
     expect(progressOf(okFirst.taskId)).toMatchObject({
       phase: "done",
       phaseSource: "verdict",
@@ -472,5 +477,156 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
     expect(existsSync(join(pluginDir, "tasks"))).toBe(false);
     expect(progressOf(undefined)).toMatchObject({ phase: "failed", phaseSource: "verdict" });
     expect(progressOf(undefined).message).toContain("999999999");
+  });
+
+  // -- Watchdog integration (#21): verdicts, lock release and warnings end-to-end
+
+  describe("watchdog integration (#21)", () => {
+    // Ack then never end: the turn is confirmed working, so only the watchdog
+    // settles it.
+    const hangAfterAck = (driver: ScriptedDriver): void => {
+      driver.afterPaste = () => {
+        driver.ack(PROMPT);
+      };
+    };
+
+    test("a hung task trips deadline: failed, lock released, driver killed, push carries the verdict", async () => {
+      watchdogOverride = { deadlineMs: 2_000 };
+      onCreated = hangAfterAck;
+      const ok = await driveGuard(guard(sing().submit(submitInput())));
+      expect(ok.phase).toBe("working");
+
+      await pumpUntil(() => pushes.length === 1);
+      expect(pushes[0]).toMatchObject({
+        taskId: ok.taskId,
+        ok: false,
+        verdict: "deadline",
+        message: expect.stringContaining("watchdog failure: deadline"),
+      });
+      expect(progressOf(ok.taskId)).toMatchObject({ phase: "failed", phaseSource: "verdict", verdict: "deadline" });
+      expect(existsSync(join(pluginDir, "lock.json"))).toBe(false);
+      expect(drivers[0].isAlive).toBe(false);
+      expect(drivers[0].calls.kill).toBe(1);
+    });
+
+    test("a queued task is measured from its own ack, not its submission", async () => {
+      watchdogOverride = { deadlineMs: 2_000 };
+      onCreated = hangAfterAck;
+      const first = await driveGuard(guard(sing().submit(submitInput())));
+      const second = await sing().submit(submitInput());
+
+      await pumpUntil(() => pushes.length === 1);
+      expect(pushes[0]).toMatchObject({ taskId: first.taskId, ok: false, verdict: "deadline" });
+      const atFirstSettle = clock.now();
+
+      await pumpUntil(() => pushes.length === 2);
+      expect(pushes[1]).toMatchObject({ taskId: second.taskId, ok: false, verdict: "deadline" });
+      // From its own ack (~60ms after activation) the trip takes a full
+      // deadline; measured from submission instead, task 2 would have settled
+      // together with task 1.
+      expect(clock.now() - atFirstSettle).toBeGreaterThanOrEqual(1_500);
+      expect(pushes[1].elapsedMs).toBeGreaterThanOrEqual(1_900);
+    });
+
+    test("a frozen task settles failed frozen; the push carries screenExcerpt and no warnings", async () => {
+      watchdogOverride = { deadlineMs: 30_000, freezeMs: 300 };
+      onCreated = hangAfterAck;
+      const ok = await driveGuard(guard(sing().submit(submitInput())));
+
+      await pumpUntil(() => pushes.length === 1);
+      expect(pushes[0]).toMatchObject({ taskId: ok.taskId, ok: false, verdict: "frozen" });
+      expect(typeof pushes[0].screenExcerpt).toBe("string");
+      expect(pushes[0].warnings).toBeUndefined();
+      expect(progressOf(ok.taskId)).toMatchObject({
+        phase: "failed",
+        verdict: "frozen",
+        screenExcerpt: expect.any(String),
+      });
+      expect(drivers[0].calls.kill).toBe(1);
+    });
+
+    test("a gone binding still sees the task settle deadline on its record, silently", async () => {
+      watchdogOverride = { deadlineMs: 2_000 };
+      onCreated = hangAfterAck;
+      const ok = await driveGuard(guard(sing().submit(submitInput())));
+      sing().bindingGone(owner.sessionId);
+
+      await pumpUntil(() => progressOf(ok.taskId).phase === "failed");
+      expect(progressOf(ok.taskId, owner)).toMatchObject({ phase: "failed", verdict: "deadline" });
+      expect(existsSync(join(pluginDir, "lock.json"))).toBe(false);
+      expect(drivers[0].isAlive).toBe(false);
+      expect(pushes).toEqual([]);
+    });
+
+    test("a fatal verdict drops the instance: the next task spawns a fresh driver", async () => {
+      watchdogOverride = { deadlineMs: 1_000 };
+      onCreated = hangAfterAck;
+      const first = await driveGuard(guard(sing().submit(submitInput())));
+      await pumpUntil(() => pushes.length === 1);
+      expect(pushes[0]).toMatchObject({ taskId: first.taskId, verdict: "deadline" });
+      expect(drivers[0].isAlive).toBe(false);
+
+      const second = await driveGuard(guard(sing().submit(submitInput())));
+      expect(drivers).toHaveLength(2);
+      expect(drivers[1]).not.toBe(drivers[0]);
+      await pumpUntil(() => pushes.length === 2);
+      expect(pushes[1]).toMatchObject({ taskId: second.taskId, verdict: "deadline" });
+    });
+
+    test("no_answer leaves the instance live: the follow-up task reuses the same driver", async () => {
+      onCreated = (driver) => {
+        driver.afterPaste = () => {
+          driver.ack(PROMPT);
+          driver.endTurn(null);
+        };
+      };
+      const first = await driveGuard(guard(sing().submit(submitInput())));
+      await pumpUntil(() => pushes.length === 1);
+      expect(pushes[0]).toMatchObject({ ok: false, verdict: "no_answer" });
+      expect(drivers[0].isAlive).toBe(true);
+      expect(drivers[0].calls.kill).toBe(0);
+
+      drivers[0].afterPaste = () => {
+        drivers[0].ack(PROMPT);
+        drivers[0].endTurn(ANSWER);
+      };
+      const second = await driveGuard(guard(sing().submit(submitInput())));
+      expect(drivers).toHaveLength(1);
+      await pumpUntil(() => pushes.length === 2);
+      expect(pushes[1]).toMatchObject({ taskId: second.taskId, ok: true, answer: ANSWER });
+    });
+
+    test("an error-log hit surfaces through the singleton: warnings in the push and progress", async () => {
+      const ERROR_LINE = "Command not found: bunx";
+      onCreated = (driver) => {
+        driver.afterPaste = () => {
+          driver.ack(PROMPT);
+          // VirtualClock timers: the line appears after the watcher arms, well
+          // before the turn ends.
+          clock.setTimeout(() => {
+            driver.screen = ERROR_LINE;
+          }, 100);
+          clock.setTimeout(() => driver.endTurn(ANSWER), 1_500);
+        };
+      };
+      const ok = await driveGuard(guard(sing().submit(submitInput())));
+
+      await pumpUntil(() => pushes.length === 1);
+      expect(pushes[0]).toMatchObject({
+        taskId: ok.taskId,
+        ok: true,
+        answer: ANSWER,
+        warnings: [ERROR_LINE],
+      });
+      expect(progressOf(ok.taskId)).toMatchObject({ phase: "done", warnings: [ERROR_LINE] });
+
+      const entry = JSON.parse(readFileSync(join(pluginDir, "errors.jsonl"), "utf8")) as {
+        time: string;
+        workspace: string;
+        lines: string[];
+      };
+      expect(entry.lines).toEqual([ERROR_LINE]);
+      expect(entry.workspace).toBe(join(pluginDir, "ws"));
+    });
   });
 });

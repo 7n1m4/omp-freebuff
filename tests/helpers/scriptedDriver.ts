@@ -122,6 +122,10 @@ export class ScriptedDriver implements DriverLike {
     return { dirName: this.dirName, logBytes: Buffer.byteLength(this.logText) };
   }
 
+  logSize(): number {
+    return Buffer.byteLength(this.logText);
+  }
+
   ackSince(baseline: TurnBaseline, prompt: string): boolean {
     return hasLineSince(this.snapshot()[0], baseline.logBytes, (json) => lineMentionsPrompt(json, prompt));
   }

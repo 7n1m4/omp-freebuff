@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { LockBusyError, writeLock } from "../src/lock";
+import { FreebuffDriverError } from "../src/driver";
 import { COUNTDOWN_REGEX, END_SESSION } from "../src/protocol/markers";
 import { classifyScreen } from "../src/protocol/screen";
 import { TurnRunner, type TurnPhase, type TurnRunnerOptions } from "../src/turnRunner";
@@ -61,7 +62,7 @@ const lockPath = () => join(pluginDir, "lock.json");
 const newRunner = (
   lockDeps?: { isPidAlive?: (pid: number) => boolean; deadlineMs?: number },
   driver: ScriptedDriver = scripted,
-  extra?: Pick<TurnRunnerOptions, "taskId" | "onPhase">,
+  extra?: Pick<TurnRunnerOptions, "taskId" | "onPhase" | "watchdog">,
 ): TurnRunner =>
   new TurnRunner({
     pluginDir,
@@ -552,5 +553,335 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     // The instance is kept for reuse after a successful settle.
     expect(runner.instancePid()).toBe(4242);
     expect(await runner.screenText()).toBe("held frame");
+  });
+
+  // -- Watchdog (#21): deadline/frozen trips at the runner seam ----------------
+
+  describe("watchdog (#21)", () => {
+    // Ack then hang: the turn is confirmed working and never ends, so only the
+    // watchdog can settle it.
+    const hangAfterAck = (driver: ScriptedDriver): void => {
+      driver.afterPaste = () => {
+        driver.ack(PROMPT);
+        driver.screen = WORKING_FRAME;
+      };
+    };
+
+    test("deadline: hang after the Ack trips the deadline with an excerpt, kill and yield", async () => {
+      const runner = newRunner(undefined, scripted, { watchdog: { deadlineMs: 30_000 } });
+      hangAfterAck(scripted);
+
+      const outcome = await drive(runner.run(PROMPT), 60_000);
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) {
+        expect(outcome.verdict).toBe("deadline");
+        expect(outcome.message).toContain("watchdog failure: deadline");
+        expect(outcome.screenExcerpt).toContain("thinking");
+      }
+      expect(scripted.calls.kill).toBe(1);
+      expect(existsSync(lockPath())).toBe(false);
+    });
+
+    test("deadline arms at the confirmed Ack, not the submit: no trip while the ack windows run", async () => {
+      const runner = newRunner(undefined, scripted, { watchdog: { deadlineMs: 1_000 } });
+      scripted.afterPaste = () => {
+        // The ack lands late in window 2 (~305ms in); the deadline measures from here.
+        clock.setTimeout(() => scripted.ack(PROMPT), 300);
+      };
+
+      let settled = false;
+      const run = runner.run(PROMPT).then((value) => {
+        settled = true;
+        return value;
+      });
+      // Past a submit-armed deadline (1s), still inside an Ack-armed one (~1.3s).
+      await clock.advance(1_200);
+      expect(settled).toBe(false);
+      expect(scripted.calls.kill).toBe(0);
+
+      const outcome = await drive(run, 10_000);
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.verdict).toBe("deadline");
+      expect(scripted.calls.kill).toBe(1);
+    });
+
+    test("frozen: a static store and screen after the Ack trip frozen with kill and yield", async () => {
+      const runner = newRunner(undefined, scripted, { watchdog: { freezeMs: 300 } });
+      hangAfterAck(scripted);
+
+      const outcome = await drive(runner.run(PROMPT), 60_000);
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) {
+        expect(outcome.verdict).toBe("frozen");
+        expect(outcome.message).toContain("watchdog failure: frozen");
+        expect(outcome.screenExcerpt).toContain("thinking");
+      }
+      expect(scripted.calls.kill).toBe(1);
+    });
+
+    test("store growth resets the freeze clock: no frozen while the log grows, frozen once it stops", async () => {
+      const runner = newRunner(undefined, scripted, { watchdog: { freezeMs: 300 } });
+      hangAfterAck(scripted);
+
+      let settled = false;
+      const run = runner.run(PROMPT).then((value) => {
+        settled = true;
+        return value;
+      });
+      const growth = clock.setInterval(() => scripted.append({ chunk: "token" }), 50);
+      await clock.advance(1_000);
+      expect(settled).toBe(false);
+      expect(scripted.calls.kill).toBe(0);
+      clock.clearInterval(growth);
+
+      // Silence from here: the accumulated stillness now trips frozen.
+      const outcome = await drive(run, 60_000);
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.verdict).toBe("frozen");
+    });
+
+    test("a real screen change resets the freeze clock even while the store is quiet", async () => {
+      const runner = newRunner(undefined, scripted, { watchdog: { freezeMs: 300 } });
+      hangAfterAck(scripted);
+
+      let settled = false;
+      const run = runner.run(PROMPT).then((value) => {
+        settled = true;
+        return value;
+      });
+      let token = 0;
+      const churn = clock.setInterval(() => {
+        token += 1;
+        scripted.screen = `${WORKING_FRAME}\nstreaming token ${token}`;
+      }, 50);
+      await clock.advance(1_000);
+      expect(settled).toBe(false);
+      expect(scripted.calls.kill).toBe(0);
+      clock.clearInterval(churn);
+
+      const outcome = await drive(run, 60_000);
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.verdict).toBe("frozen");
+    });
+
+    test("a countdown-only screen change never resets the freeze clock", async () => {
+      const runner = newRunner(undefined, scripted, { watchdog: { freezeMs: 300 } });
+      scripted.afterPaste = () => {
+        scripted.ack(PROMPT);
+        scripted.screen = `${WORKING_FRAME}\n  2m left`;
+      };
+      // The raw screen keeps changing, but only in lines freezeKey strips.
+      let minutes = 2;
+      const countdown = clock.setInterval(() => {
+        minutes = minutes === 2 ? 1 : 2;
+        scripted.screen = `${WORKING_FRAME}\n  ${minutes}m left`;
+      }, 50);
+
+      const outcome = await drive(runner.run(PROMPT), 60_000);
+      clock.clearInterval(countdown);
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.verdict).toBe("frozen");
+      expect(scripted.calls.kill).toBe(1);
+    });
+
+    test("a freeze tick that throws is contained: the watchdog keeps watching and still trips", async () => {
+      class FlakyScreenDriver extends ScriptedDriver {
+        failuresLeft = 0;
+        override async screenText(): Promise<string> {
+          if (this.failuresLeft > 0) {
+            this.failuresLeft -= 1;
+            throw new Error("screen hiccup");
+          }
+          return super.screenText();
+        }
+      }
+      const flaky = new FlakyScreenDriver(clockSleep(clock));
+      hangAfterAck(flaky);
+      const runner = newRunner(undefined, flaky, { watchdog: { freezeMs: 300 } });
+      // One broken read mid-watch; the interval must survive it.
+      clock.setTimeout(() => {
+        flaky.failuresLeft = 1;
+      }, 150);
+
+      const outcome = await drive(runner.run(PROMPT), 60_000);
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.verdict).toBe("frozen");
+      expect(flaky.calls.kill).toBe(1);
+    });
+
+    test("a paste into a dead child surfaces process_exited as crashed with kill and yield", async () => {
+      class DyingPasteDriver extends ScriptedDriver {
+        override async pastePrompt(_text: string): Promise<void> {
+          throw new FreebuffDriverError("process_exited", "pty gone");
+        }
+      }
+      const dying = new DyingPasteDriver(clockSleep(clock));
+      const runner = newRunner(undefined, dying);
+
+      const outcome = await drive(runner.run(PROMPT));
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.verdict).toBe("crashed");
+      expect(dying.calls.kill).toBe(1);
+      expect(dying.isAlive).toBe(false);
+      expect(existsSync(lockPath())).toBe(false);
+    });
+
+    test("a settled run leaves no live watchdog: far advances write no second archive and never kill", async () => {
+      const runner = newRunner(undefined, scripted, {
+        watchdog: { deadlineMs: 30_000, freezeMs: 300 },
+      });
+      scripted.afterPaste = ackAndEnd;
+
+      const outcome = await drive(runner.run(PROMPT));
+      expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
+      const ids = archiveIds();
+      expect(ids).toHaveLength(1);
+
+      await clock.advance(10 * 60_000);
+      expect(archiveIds()).toEqual(ids);
+      expect(scripted.calls.kill).toBe(0);
+      expect(scripted.isAlive).toBe(true);
+      expect(created).toBe(1);
+    });
+  });
+
+  // -- Error log watcher (#21): screen error lines warn and log, never judge --
+
+  describe("error log watcher (#21)", () => {
+    const ERROR_LINE = "Command not found: bunx";
+    const framesWith = (line: string): string => `${WORKING_FRAME}\n${line}`;
+    // VirtualClock timers only: the error line appears after the watchdog arms
+    // (its screen read is the baseline), raised deterministically on the clock.
+    const raiseErrorAt = (driver: ScriptedDriver, atMs: number): void => {
+      clock.setTimeout(() => {
+        driver.screen = framesWith(ERROR_LINE);
+      }, atMs);
+    };
+
+    const watchRunner = (): TurnRunner =>
+      newRunner(undefined, scripted, { watchdog: { deadlineMs: 30_000, freezeMs: 5_000 } });
+
+    test("an error line appearing after the Ack lands in warnings and in errors.jsonl", async () => {
+      const runner = watchRunner();
+      scripted.afterPaste = () => {
+        scripted.ack(PROMPT);
+        raiseErrorAt(scripted, 100);
+        clock.setTimeout(() => scripted.endTurn(ANSWER), 1_000);
+      };
+
+      const outcome = await drive(runner.run(PROMPT));
+      if (!outcome.ok) throw new Error("expected success");
+      expect(outcome.warnings).toEqual([ERROR_LINE]);
+
+      const log = join(pluginDir, "errors.jsonl");
+      expect(existsSync(log)).toBe(true);
+      const entry = JSON.parse(readFileSync(log, "utf8")) as { time: string; workspace: string; lines: string[] };
+      expect(entry.lines).toEqual([ERROR_LINE]);
+      expect(entry.workspace).toBe(join(pluginDir, "ws"));
+      expect(typeof entry.time).toBe("string");
+    });
+
+    test("a line already on screen at arm time is baseline and never warns", async () => {
+      const runner = watchRunner();
+      scripted.afterPaste = () => {
+        scripted.ack(PROMPT);
+        scripted.screen = framesWith(ERROR_LINE);
+        clock.setTimeout(() => scripted.endTurn(ANSWER), 1_000);
+      };
+
+      const outcome = await drive(runner.run(PROMPT));
+      if (!outcome.ok) throw new Error("expected success");
+      expect(outcome.warnings).toBeUndefined();
+      expect(existsSync(join(pluginDir, "errors.jsonl"))).toBe(false);
+    });
+
+    test("scans wait for the arm-time baseline: a line present before it lands never warns", async () => {
+      // The baseline read resolves after the first error tick (400 ms > 250 ms),
+      // as a real PTY read under load can. Only a gated scan keeps the
+      // pre-existing line from warning as new before the baseline arrives.
+      class LateBaselineDriver extends ScriptedDriver {
+        reads = 0;
+        override async screenText(): Promise<string> {
+          this.reads += 1;
+          if (this.reads === 1) {
+            return new Promise<string>((resolve) => {
+              clock.setTimeout(() => void resolve(super.screenText()), 400);
+            });
+          }
+          return super.screenText();
+        }
+      }
+      const late = new LateBaselineDriver(clockSleep(clock));
+      late.afterPaste = () => {
+        late.ack(PROMPT);
+        late.screen = framesWith(ERROR_LINE);
+        clock.setTimeout(() => late.endTurn(ANSWER), 2_000);
+      };
+      const runner = newRunner(undefined, late, { watchdog: { deadlineMs: 30_000, freezeMs: 5_000 } });
+
+      const outcome = await drive(runner.run(PROMPT));
+      if (!outcome.ok) throw new Error("expected success");
+      expect(outcome.warnings).toBeUndefined();
+      expect(existsSync(join(pluginDir, "errors.jsonl"))).toBe(false);
+    });
+
+    test("one warning per line per run; a new run with a fresh baseline warns again", async () => {
+      const runner = watchRunner();
+      scripted.afterPaste = () => {
+        scripted.ack(PROMPT);
+        raiseErrorAt(scripted, 100);
+        clock.setTimeout(() => scripted.endTurn(ANSWER), 1_000);
+      };
+      const first = await drive(runner.run(PROMPT));
+      if (!first.ok) throw new Error("expected success");
+      expect(first.warnings).toEqual([ERROR_LINE]);
+
+      // Success keeps the Instance (ADR-0001): the same driver runs the second
+      // turn, its screen reset clean before the line reappears mid-run.
+      expect(scripted.isAlive).toBe(true);
+      scripted.afterPaste = () => {
+        scripted.ack(PROMPT);
+        scripted.screen = WORKING_FRAME;
+        raiseErrorAt(scripted, 100);
+        clock.setTimeout(() => scripted.endTurn(ANSWER), 1_000);
+      };
+      const second = await drive(runner.run(PROMPT));
+      if (!second.ok) throw new Error("expected success");
+      expect(second.warnings).toEqual([ERROR_LINE]);
+
+      const entries = readFileSync(join(pluginDir, "errors.jsonl"), "utf8").trim().split("\n");
+      expect(entries).toHaveLength(2);
+    });
+
+    test("error lines never change the verdict: a frozen trip stays frozen with warnings attached", async () => {
+      const runner = newRunner(undefined, scripted, { watchdog: { deadlineMs: 30_000, freezeMs: 300 } });
+      scripted.afterPaste = () => {
+        scripted.ack(PROMPT);
+        raiseErrorAt(scripted, 100);
+      };
+
+      const outcome = await drive(runner.run(PROMPT));
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) {
+        expect(outcome.verdict).toBe("frozen");
+        expect(outcome.warnings).toEqual([ERROR_LINE]);
+      }
+      expect(scripted.calls.kill).toBe(1);
+    });
+
+    test("stop runs one final scan: a line visible only at settle time is still captured", async () => {
+      const runner = watchRunner();
+      scripted.afterPaste = () => {
+        scripted.ack(PROMPT);
+        clock.setTimeout(() => {
+          scripted.screen = framesWith(ERROR_LINE);
+          scripted.endTurn(ANSWER);
+        }, 1_000);
+      };
+
+      const outcome = await drive(runner.run(PROMPT));
+      if (!outcome.ok) throw new Error("expected success");
+      expect(outcome.warnings).toEqual([ERROR_LINE]);
+    });
   });
 });

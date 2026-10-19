@@ -9,7 +9,7 @@
 // - FREEBUFF_CONFIG_DIR      chat-store root, <dir>/projects/<basename(cwd)>/chats/
 // - FREEBUFF_STUB_MODE       happy (default) | no-ack | no-answer | first-submit |
 //                            lost-first-submit | cost-modal | kill-mid-turn |
-//                            slow-ack | takeover | displaced | unknown
+//                            slow-ack | takeover | displaced | unknown | wedged
 // - FREEBUFF_STUB_INPUT_LOG  JSON-lines file; one line per keystroke class
 // - FREEBUFF_STUB_HELD_LOG_MS 'exit' buffers every chat-store write until the
 //                            process exits, so no Turn line lands while it runs
@@ -170,6 +170,15 @@ const runTurn = async (prompt) => {
   storeWrite(JSON.stringify({ msg: prompt }) + "\n");
   if (crashThisTurn) {
     setTimeout(() => process.exit(1), 100);
+    return;
+  }
+  // Wedged: the Ack is in the store, then the screen freezes mid-turn with a
+  // known error marker on it and nothing ever ends the Turn — only the
+  // deadline/frozen watchdog gets a Task out of this Instance. The marker is
+  // painted late so the error watcher's at-arm baseline scan reads the screen
+  // without it and counts the copy as new.
+  if (mode === "wedged") {
+    setTimeout(() => paint(workingBody() + `\n  ✗ Command not found: ${model} lint`), 250);
     return;
   }
   if (endDelayMs > 0) await sleep(endDelayMs);

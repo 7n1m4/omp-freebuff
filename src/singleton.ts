@@ -40,6 +40,10 @@ export interface SettlePush {
   verdict?: Verdict;
   message?: string;
   archivePath?: string;
+  /** The failed run's last screen lines; absent on success. */
+  screenExcerpt?: string;
+  /** Known error lines the run's watcher saw; absent when there were none. */
+  warnings?: string[];
   elapsedMs: number;
 }
 
@@ -62,6 +66,10 @@ export interface ProgressDetails {
   answer?: string;
   message?: string;
   archivePath?: string;
+  /** Only on failed: the run's last screen lines. */
+  screenExcerpt?: string;
+  /** Known error lines the run's watcher saw; absent when there were none. */
+  warnings?: string[];
   position?: number;
 }
 
@@ -121,6 +129,8 @@ interface TaskRecord {
   verdict: Verdict | undefined;
   message: string | undefined;
   archivePath: string | undefined;
+  screenExcerpt: string | undefined;
+  warnings: string[];
   pushed: boolean;
   // PromiseWithResolvers' type is not in the ES2022 lib; the shape is stable.
   ack: { promise: Promise<SubmitOk>; resolve(value: SubmitOk): void; reject(reason: unknown): void };
@@ -230,6 +240,8 @@ export class FreebuffSingleton {
       verdict: undefined,
       message: undefined,
       archivePath: undefined,
+      screenExcerpt: undefined,
+      warnings: [],
       pushed: false,
       ack: Promise.withResolvers<SubmitOk>(),
     };
@@ -292,6 +304,8 @@ export class FreebuffSingleton {
     task.verdict = result.verdict;
     task.message = result.message;
     task.archivePath = result.archivePath;
+    task.screenExcerpt = result.screenExcerpt;
+    task.warnings = result.warnings ?? [];
     const elapsedMs = this.elapsedMs(task);
     if (task.ackedAt === undefined) {
       // Settled before the ack: the submit call learns of it as a failure.
@@ -323,12 +337,14 @@ export class FreebuffSingleton {
 
   private fieldsOf(outcome: TurnOutcome): SettleFields {
     return outcome.ok
-      ? { ok: true, answer: outcome.answer, archivePath: outcome.archivePath }
+      ? { ok: true, answer: outcome.answer, archivePath: outcome.archivePath, warnings: outcome.warnings }
       : {
           ok: false,
           verdict: outcome.verdict,
           message: outcome.message,
           archivePath: outcome.archivePath,
+          screenExcerpt: outcome.screenExcerpt,
+          warnings: outcome.warnings,
         };
   }
 
@@ -372,6 +388,8 @@ export class FreebuffSingleton {
       answer: task.answer,
       message: task.message,
       archivePath: task.archivePath,
+      screenExcerpt: task.phase === "failed" ? task.screenExcerpt : undefined,
+      warnings: task.warnings.length > 0 ? task.warnings : undefined,
       position: task.phase === "queued" ? this.queue.indexOf(task.taskId) + 1 : undefined,
     };
   }

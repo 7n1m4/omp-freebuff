@@ -10,7 +10,30 @@
 //
 // The polling loops sleep on the wall clock on purpose: the counterpart is a
 // real child process behind a real PTY, which fake timers cannot advance.
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+//
+// Verdict reachability (the nine-set): every verdict a run can settle with is
+// proven at the highest practical tier, and the shared failed-result rendering
+// is proven once e2e in the deadline test.
+// - deadline: "a wedged task trips the deadline watchdog" (below); policy:
+//   singleton.test.ts "a hung task trips deadline"
+// - frozen: "a static task trips the freeze watchdog" (below); policy:
+//   singleton.test.ts "a frozen task settles failed frozen"
+// - crashed: "a mid-turn crash settles as crashed" (below); PTY: task.test.ts
+//   "crashed"; policy: turnRunner.test.ts "driver dies mid-turn"
+// - ack_missing: "an unacked submit lands as ack_missing" (below); PTY:
+//   task.test.ts "ack_missing"; policy: turnRunner.test.ts "no ack signals"
+// - no_answer: "a no-answer failure leaves the instance live" (below) + "a
+//   failed task settles under its verdict" (below); PTY: task.test.ts
+//   "no-answer"; policy: turnRunner.test.ts "turn ends without an answer"
+// - slot_held: the test.each settle-frame block (below); PTY: task.test.ts
+//   "slot_held"; policy: turnRunner.test.ts settle-mapping test.each and
+//   singleton.test.ts "a settle that fails slot_held"
+// - displaced: the test.each settle-frame block (below); driver tier:
+//   driver.test.ts "displaced"; policy: turnRunner.test.ts settle mapping
+// - driver_error: the test.each settle-frame block (below, the unknown frame);
+//   policy: turnRunner.test.ts settle mapping (needs_login, ready_timeout)
+// - cancelled: owned by the stop ticket #22; never produced by this surface.
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -22,7 +45,7 @@ import type { FreebuffSingleton, OwnerBinding, ProgressDetails, SettlePush, Subm
 import { getFreebuffSingleton, resetFreebuffForTests } from "../src/singleton";
 import type { TurnRunnerOptions } from "../src/turnRunner";
 import { createHarnessSession, type Harness } from "./helpers/sdkHarness";
-import { eventsOf, readInputLog } from "./helpers/stubInputLog";
+import { eventsOf, kindsOf, readInputLog } from "./helpers/stubInputLog";
 
 const stubPath = join(import.meta.dir, "helpers", "stub-freebuff.mjs");
 const TIMINGS = { settleMs: 4_000, ackMs: 1_500, pollMs: 25, pasteSettleMs: 60, pressThrottleMs: 120 };
@@ -124,7 +147,10 @@ afterEach(async () => {
 
 // Publishes the rig's runner options for the extension to read on first tool
 // execute; the stub child is the repo's own runtime with mode knobs in env.
-const openRig = (mode: string, opts: { endDelayMs?: number; ackMs?: number } = {}): void => {
+const openRig = (
+  mode: string,
+  opts: { endDelayMs?: number; ackMs?: number; watchdog?: { deadlineMs?: number; freezeMs?: number } } = {},
+): void => {
   rig.inputLog = join(rig.pluginDir, "stub-input.jsonl");
   const env: Record<string, string> = {
     FREEBUFF_STUB_MODE: mode,
@@ -138,6 +164,7 @@ const openRig = (mode: string, opts: { endDelayMs?: number; ackMs?: number } = {
     command: { application: process.execPath, args: [stubPath] },
     env,
     timings: { ...TIMINGS, ackMs: opts.ackMs ?? TIMINGS.ackMs },
+    ...(opts.watchdog === undefined ? {} : { watchdog: opts.watchdog }),
   } satisfies TurnRunnerOptions);
 };
 
@@ -188,6 +215,24 @@ const waitFor = async (predicate: () => boolean, budgetMs = 15_000): Promise<voi
   tick();
   await promise;
   if (!predicate()) throw new Error("waitFor: budget exceeded");
+};
+
+// A bounded wall-clock hold, for the tests that must NOT observe anything
+// before a deadline passes (the watchdog's deadline measures from the Ack).
+// Real time on purpose, like waitFor above: the counterpart is a real child
+// process behind a real PTY, so no event carries the wait and fake timers
+// cannot advance the child's clock.
+const sleep = (ms: number): Promise<void> => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+};
+
+// The stub child's pid, straight from the keystroke log's spawn line.
+const spawnPid = (path: string): number => {
+  const [spawn] = eventsOf(readInputLog(path), "spawn");
+  expect(spawn?.pid).toEqual(expect.any(Number));
+  return spawn!.pid!;
 };
 
 // Polls progress through the singleton until `until` holds, recording every
@@ -532,6 +577,267 @@ describe("freebuff tool surface over the singleton (harness tier)", () => {
       } finally {
         await owner.dispose();
         await bystander.dispose();
+      }
+    },
+    60_000,
+  );
+
+  // -- Watchdog verdicts and failed-result rendering through the tools (#21) ----
+
+  test(
+    "a wedged task trips the deadline watchdog: failed progress names deadline, lock gone, stub killed",
+    async () => {
+      const deadlineMs = 800;
+      openRig("wedged", { watchdog: { deadlineMs } });
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...runCall(PROMPT), ...SPARES.slice(0, 1), ...progressCall(), ...SPARES.slice(1)],
+      });
+      try {
+        expect(await owner.session.prompt("run it")).toBe(true);
+        const run = lastToolResult(owner, "freebuff_run");
+        expect(run.isError).toBe(false);
+        const taskId = (run.details as SubmitOk).taskId;
+
+        // Hold past the deadline before the first poll: the watchdog measures
+        // from the Ack, so a poll before it can only ever see "working".
+        await sleep(deadlineMs + 700);
+        await waitFor(() => !owner.session.isStreaming);
+
+        expect(await owner.session.prompt("poll")).toBe(true);
+        const poll = lastToolResult(owner, "freebuff_progress");
+        expect(poll.isError).toBe(true);
+        const details = poll.details as ProgressDetails;
+        expect(details).toMatchObject({
+          taskId,
+          phase: "failed",
+          phaseSource: "verdict",
+          verdict: "deadline",
+          archivePath: expect.any(String),
+          screenExcerpt: expect.any(String),
+        });
+        expect(details.message).toContain("watchdog failure: deadline");
+        // The known error marker the wedged screen raised rides as a warning.
+        expect(details.warnings).toEqual([expect.stringContaining("Command not found")]);
+        // The failed result carries structured details, not text-encoded JSON:
+        // the rendered line is the prose failure line, unparsable as JSON.
+        expect(() => JSON.parse(textOf(poll))).toThrow();
+        expect(existsSync(join(rig.pluginDir, "lock.json"))).toBe(false);
+
+        await waitFor(() => !pidAlive(spawnPid(rig.inputLog)));
+      } finally {
+        await owner.dispose();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "a static task trips the freeze watchdog: failed progress names frozen, never reads as success",
+    async () => {
+      openRig("wedged", { watchdog: { freezeMs: 400 } });
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...runCall(PROMPT), ...SPARES.slice(0, 1), ...progressCall(), ...SPARES.slice(1)],
+      });
+      try {
+        expect(await owner.session.prompt("run it")).toBe(true);
+        await sleep(1_500); // well past freezeMs, far under the default deadline
+        await waitFor(() => !owner.session.isStreaming);
+
+        expect(await owner.session.prompt("poll")).toBe(true);
+        const poll = lastToolResult(owner, "freebuff_progress");
+        expect(poll.isError).toBe(true);
+        const details = poll.details as ProgressDetails;
+        expect(details).toMatchObject({ phase: "failed", phaseSource: "verdict", verdict: "frozen" });
+        expect(details.message).toContain("watchdog failure: frozen");
+        expect(existsSync(join(rig.pluginDir, "lock.json"))).toBe(false);
+        await waitFor(() => !pidAlive(spawnPid(rig.inputLog)));
+      } finally {
+        await owner.dispose();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "a mid-turn crash settles as crashed in the tool result and the stub is gone",
+    async () => {
+      openRig("kill-mid-turn");
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...runCall(PROMPT), ...SPARES.slice(0, 1), ...progressCall(), ...SPARES.slice(1)],
+      });
+      try {
+        expect(await owner.session.prompt("run it")).toBe(true);
+        await sleep(1_200); // the stub exits ~100ms after its Ack line
+        await waitFor(() => !owner.session.isStreaming);
+
+        expect(await owner.session.prompt("poll")).toBe(true);
+        const poll = lastToolResult(owner, "freebuff_progress");
+        expect(poll.isError).toBe(true);
+        expect(poll.details as ProgressDetails).toMatchObject({ phase: "failed", verdict: "crashed" });
+        expect(existsSync(join(rig.pluginDir, "lock.json"))).toBe(false);
+        await waitFor(() => !pidAlive(spawnPid(rig.inputLog)));
+      } finally {
+        await owner.dispose();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "an unacked submit lands as ack_missing in the run result and the failed progress",
+    async () => {
+      openRig("no-ack", { ackMs: 600 });
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        // The submit settles before the Ack, so the push lands mid-turn and
+        // never becomes an aside turn: no spare may sit before the poll call.
+        responses: [...runCall(PROMPT), ...progressCall(), ...SPARES],
+      });
+      try {
+        expect(await owner.session.prompt("run it")).toBe(true);
+        // The submit settles before any Ack, so freebuff_run itself fails and
+        // names the verdict in its structured details.
+        const run = lastToolResult(owner, "freebuff_run");
+        expect(run.isError).toBe(true);
+        expect(run.details).toMatchObject({ code: "submit_failed", verdict: "ack_missing" });
+
+        await waitFor(() => !owner.session.isStreaming);
+        expect(await owner.session.prompt("poll")).toBe(true);
+        const poll = lastToolResult(owner, "freebuff_progress");
+        expect(poll.isError).toBe(true);
+        expect(poll.details as ProgressDetails).toMatchObject({
+          phase: "failed",
+          phaseSource: "verdict",
+          verdict: "ack_missing",
+          archivePath: expect.any(String),
+        });
+        expect(existsSync(join(rig.pluginDir, "lock.json"))).toBe(false);
+      } finally {
+        await owner.dispose();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "a no-answer failure leaves the instance live and the next submit reuses it without a respawn",
+    async () => {
+      openRig("no-answer");
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...runCall(PROMPT), ...SPARES.slice(0, 1), ...progressCall(), ...runCall("again"), ...SPARES.slice(1)],
+      });
+      try {
+        expect(await owner.session.prompt("run it")).toBe(true);
+        const taskId = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+        await waitFor(() => existsSync(join(rig.pluginDir, "tasks", taskId)));
+        await waitFor(() => !owner.session.isStreaming);
+
+        expect(await owner.session.prompt("poll")).toBe(true);
+        const poll = lastToolResult(owner, "freebuff_progress");
+        expect(poll.isError).toBe(true);
+        expect(poll.details as ProgressDetails).toMatchObject({ phase: "failed", phaseSource: "verdict", verdict: "no_answer" });
+
+        // no_answer keeps the Instance: still alive after the failed result,
+        // and the second submission reuses it instead of spawning a new stub.
+        const pid = spawnPid(rig.inputLog);
+        expect(pidAlive(pid)).toBe(true);
+
+        expect(await owner.session.prompt("run again")).toBe(true);
+        const second = lastToolResult(owner, "freebuff_run");
+        expect(second.isError).toBe(false);
+        expect((second.details as SubmitOk).phase).toBe("working");
+        expect(eventsOf(readInputLog(rig.inputLog), "spawn")).toHaveLength(1);
+        expect(pidAlive(pid)).toBe(true);
+      } finally {
+        await owner.dispose();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "the watchdog outlives the owning session's shutdown; the lock frees and the archive names the verdict",
+    async () => {
+      const deadlineMs = 800;
+      openRig("wedged", { watchdog: { deadlineMs } });
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...runCall(PROMPT), ...SPARES],
+      });
+      const bystander = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...statusCall(), ...SPARES],
+      });
+      try {
+        expect(await owner.session.prompt("run it")).toBe(true);
+        const taskId = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+        // dispose delivers session_shutdown: the singleton keeps the task, the
+        // binding's paint/push go silent, and the deadline still settles it.
+        await owner.dispose();
+
+        await waitFor(() => existsSync(join(rig.pluginDir, "tasks", taskId)));
+        const meta = JSON.parse(readFileSync(join(rig.pluginDir, "tasks", taskId, "meta.json"), "utf8")) as {
+          verdict: string;
+        };
+        expect(meta.verdict).toBe("deadline");
+
+        expect(await bystander.session.prompt("status")).toBe(true);
+        const status = lastToolResult(bystander, "freebuff_status");
+        expect(status.isError).toBe(false);
+        expect(status.details as StatusDetails).toMatchObject({
+          lock: { state: "free" },
+          queue: { depth: 0 },
+          activeTask: null,
+        });
+      } finally {
+        await bystander.dispose();
+      }
+    },
+    60_000,
+  );
+
+  // The stub's own failure frames: the settle loop reads each frame and fails
+  // with zero keystrokes, and both tool surfaces name the mapped verdict.
+  test.each([
+    ["takeover", "slot_held"],
+    ["displaced", "displaced"],
+    ["unknown", "driver_error"],
+  ] as const)(
+    "a %s frame fails the submit with verdict %s, named in run and progress alike",
+    async (mode, verdict) => {
+      openRig(mode);
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        // The submit settles before the Ack, so the push lands mid-turn and
+        // never becomes an aside turn: no spare may sit before the poll call.
+        responses: [...runCall(PROMPT), ...progressCall(), ...SPARES],
+      });
+      try {
+        expect(await owner.session.prompt("run it")).toBe(true);
+        const run = lastToolResult(owner, "freebuff_run");
+        expect(run.isError).toBe(true);
+        expect(run.details).toMatchObject({ code: "submit_failed", verdict });
+
+        await waitFor(() => !owner.session.isStreaming);
+        expect(await owner.session.prompt("poll")).toBe(true);
+        const poll = lastToolResult(owner, "freebuff_progress");
+        expect(poll.isError).toBe(true);
+        expect(poll.details as ProgressDetails).toMatchObject({
+          phase: "failed",
+          phaseSource: "verdict",
+          verdict,
+          archivePath: expect.any(String),
+          screenExcerpt: expect.any(String),
+        });
+        // The settle failed before any keystroke: nothing but the spawn logged.
+        expect(kindsOf(readInputLog(rig.inputLog))).toEqual(["spawn"]);
+        await waitFor(() => !pidAlive(spawnPid(rig.inputLog)));
+      } finally {
+        await owner.dispose();
       }
     },
     60_000,
