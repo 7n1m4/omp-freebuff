@@ -116,6 +116,7 @@ interface TaskRecord {
   phaseSource: PhaseSource;
   submittedAt: number;
   ackedAt: number | undefined;
+  settledAt: number | undefined;
   answer: string | undefined;
   verdict: Verdict | undefined;
   message: string | undefined;
@@ -224,6 +225,7 @@ export class FreebuffSingleton {
       phaseSource: "step-state",
       submittedAt: this.now(),
       ackedAt: undefined,
+      settledAt: undefined,
       answer: undefined,
       verdict: undefined,
       message: undefined,
@@ -285,6 +287,7 @@ export class FreebuffSingleton {
   private settle(task: TaskRecord, result: SettleFields): void {
     task.phase = result.ok ? "done" : "failed";
     task.phaseSource = "verdict";
+    task.settledAt = this.now();
     task.answer = result.answer;
     task.verdict = result.verdict;
     task.message = result.message;
@@ -335,6 +338,7 @@ export class FreebuffSingleton {
   private abandon(task: TaskRecord, rejection: Rejection): void {
     task.phase = "failed";
     task.phaseSource = "verdict";
+    task.settledAt = this.now();
     task.message = rejection.message;
     this.clearPaint(task);
     this.drain();
@@ -379,6 +383,12 @@ export class FreebuffSingleton {
       queue: { depth: this.queue.length, taskIds: [...this.queue] },
       activeTask: active === undefined ? null : { taskId: active.taskId, phase: active.phase },
     };
+  }
+
+  // freebuff_status reports the live Instance pid; the runner owns the driver,
+  // so this delegates instead of exposing it.
+  instancePid(): number | null {
+    return this.runner?.instancePid() ?? null;
   }
 
   async screenText(binding: OwnerBinding): Promise<string> {
@@ -437,10 +447,13 @@ export class FreebuffSingleton {
   }
 
   // queued counts from submission; everything from the ack counts from the ack,
-  // falling back to the submission when the ack never landed.
+  // falling back to the submission when the ack never landed. A settled task's
+  // duration is frozen at its settle — later polls report the Task's length,
+  // not the time since it finished.
   private elapsedMs(task: TaskRecord): number {
+    const at = task.settledAt ?? this.now();
     const from = task.phase !== "queued" && task.ackedAt !== undefined ? task.ackedAt : task.submittedAt;
-    return Math.max(0, this.now() - from);
+    return Math.max(0, at - from);
   }
 
   // The paint timer is process-scoped (ADR-0004): started on first activation,

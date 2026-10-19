@@ -9,6 +9,8 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type ExtensionActions,
+  type ExtensionContextActions,
   type ExtensionFactory,
   type LoadExtensionsResult,
   AuthStorage,
@@ -41,6 +43,48 @@ export interface Harness {
 
 // registerMockApi mutates a global provider table; one registration per process.
 let mockRegistered = false;
+
+// A host's mode controller initializes the extension runner after
+// createAgentSession returns; the bare SDK never does, so every pi action
+// method (sendMessage, appendEntry, ...) would throw
+// ExtensionRuntimeNotInitializedError forever. Wire the actions extensions use
+// onto this session, the way print/TUI mode does.
+const initializeExtensionRunner = (session: AgentSession): void => {
+  const runner = session.extensionRunner;
+  if (runner === undefined) return;
+  const actions = {
+    sendMessage: (message, options) => {
+      void session.sendCustomMessage(message, options).catch(() => {});
+    },
+    sendUserMessage: (content, options) => {
+      void session.sendUserMessage(content, options).catch(() => {});
+    },
+    appendEntry: (customType, data) => {
+      session.sessionManager.appendCustomEntry(customType, data);
+    },
+    setLabel: () => {},
+    getActiveTools: () => session.getActiveToolNames(),
+    getAllTools: () => [],
+    setActiveTools: async () => {},
+    getCommands: () => [],
+    setModel: async () => false,
+    getThinkingLevel: () => "medium" as const,
+    setThinkingLevel: async () => {},
+    getSessionName: () => session.sessionManager.getSessionName(),
+    setSessionName: async () => {},
+  } as ExtensionActions; // the harness wires only the actions extensions call; the rest stay inert
+  const contextActions = {
+    getModel: () => undefined,
+    isIdle: () => false,
+    abort: () => {},
+    hasPendingMessages: () => false,
+    shutdown: () => {},
+    getContextUsage: () => undefined,
+    compact: async () => {},
+    getSystemPrompt: () => [],
+  } as ExtensionContextActions; // ctx action reads the harness never exercises
+  runner.initialize(actions, contextActions);
+};
 
 export async function createHarnessSession(options: HarnessOptions = {}): Promise<Harness> {
   const tmp = mkdtempSync(join(tmpdir(), "freebuff-harness-"));
@@ -75,6 +119,8 @@ export async function createHarnessSession(options: HarnessOptions = {}): Promis
     promptTemplates: [],
     slashCommands: [],
   });
+
+  initializeExtensionRunner(result.session);
 
   const dispose = async (): Promise<void> => {
     try {

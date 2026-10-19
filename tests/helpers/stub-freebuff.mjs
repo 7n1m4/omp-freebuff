@@ -14,6 +14,9 @@
 // - FREEBUFF_STUB_HELD_LOG_MS 'exit' buffers every chat-store write until the
 //                            process exits, so no Turn line lands while it runs
 //                            (reserved for #20's detach e2e: ack by screen alone)
+// - FREEBUFF_STUB_END_DELAY_MS  ms to hold between the Ack line and the end
+//                            lines, so a caller can observe the Task working
+//                            after the Ack (default 0)
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -29,6 +32,7 @@ const mode = process.env.FREEBUFF_STUB_MODE ?? "happy";
 const configDir = process.env.FREEBUFF_CONFIG_DIR;
 const inputLog = process.env.FREEBUFF_STUB_INPUT_LOG ?? null;
 const heldLogMs = process.env.FREEBUFF_STUB_HELD_LOG_MS ?? null;
+const endDelayMs = Number(process.env.FREEBUFF_STUB_END_DELAY_MS ?? "0");
 
 const logInput = (entry) => {
   if (inputLog !== null) appendFileSync(inputLog, JSON.stringify({ t: Date.now(), ...entry }) + "\n");
@@ -168,6 +172,7 @@ const runTurn = async (prompt) => {
     setTimeout(() => process.exit(1), 100);
     return;
   }
+  if (endDelayMs > 0) await sleep(endDelayMs);
   await sleep(30 + Math.random() * 40);
   storeWrite(
     JSON.stringify({

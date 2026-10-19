@@ -20,6 +20,11 @@ changes. Grows as wayfinder tickets resolve.
   _Avoid:_ "session" (for the process).
 - **Owner**: the process holding the Lock — an OMP session's Extension, or the
   Keeper.
+- **Owner session**: the session whose binding submitted the Task in flight; its
+  calls alone are answered — progress paints and the settle push go to that
+  binding, and any other session's call is refused with a message naming the
+  owner (the queue exists for that one session's rapid submissions).
+  _Avoid:_ "user" (a session, not a person).
 - **Orphan instance**: a live Instance whose Owner is gone (a hard-killed OMP, a
   crashed Extension). It cannot be driven, because a PTY handle does not cross
   processes, so it is reclaimed, never adopted.
