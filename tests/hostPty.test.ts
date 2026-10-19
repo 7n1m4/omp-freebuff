@@ -40,4 +40,32 @@ describe("host PTY seam", () => {
     },
     30_000,
   );
+
+  test(
+    "write and kill after the child exits throw the native not-running error",
+    async () => {
+      const pty = new PtySession();
+      const result = await pty.startArgv({ application: "cmd.exe", args: ["/c", "ver"], cols: 120, rows: 40 }, () => {});
+      expect(result.cancelled).toBe(false);
+      // The native teardown frees the session slightly after the run promise
+      // resolves; the driver maps the thrown wording to process_exited, so the
+      // exact message is pinned. Bounded poll because the throw is the condition.
+      const thrownMessage = async (act: () => void): Promise<string | null> => {
+        for (let poll = 0; poll < 100; poll++) {
+          try {
+            act();
+          } catch (error) {
+            return (error as Error).message;
+          }
+          const { promise, resolve } = Promise.withResolvers<void>();
+          setTimeout(resolve, 25);
+          await promise;
+        }
+        return null;
+      };
+      expect(await thrownMessage(() => pty.write("dir\r"))).toBe("PTY session is not running");
+      expect(await thrownMessage(() => pty.kill())).toBe("PTY session is not running");
+    },
+    30_000,
+  );
 });

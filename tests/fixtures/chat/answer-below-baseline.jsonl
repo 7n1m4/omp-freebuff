@@ -1,0 +1,4 @@
+{"type":"user","parts":["write the parser"]}
+{"type":"end","role":"agent","shouldEndTurn":true,"data":{"fullResponse":"Parser handles nested lists."}}
+{"type":"user","parts":["now benchmark it"]}
+{"msg":"Main prompt finished"}

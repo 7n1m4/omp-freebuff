@@ -1,0 +1,2 @@
+{"type":"user","parts":["summarize the diff"]}
+{"type":"end","role":"agent","shouldEndTurn":true,"data":{"fullResponse":"Summary written."}}

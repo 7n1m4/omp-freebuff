@@ -100,6 +100,9 @@ export const errorLines = (text: string): string[] =>
     .filter((line) => KNOWN_ERROR_STRINGS.some((marker) => line.includes(marker)))
     .map((line) => line.trim());
 
+/** How many lines every failure excerpt carries, so excerpts cannot drift between call sites. */
+export const EXCERPT_LINES = 20;
+
 /** The last `count` non-blank screen lines, right-trimmed, for failure messages. */
 export const screenExcerpt = (text: string, count: number): string =>
   text
