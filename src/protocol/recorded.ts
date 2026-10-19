@@ -4,6 +4,37 @@
 // frames are the ticket's binding expectations.
 import type { KnownScreen, RecognitionLevel } from "./signatures";
 
+// The freebuff CLI version the live wordings were measured against: the six 0.2.29
+// rows below and the marker table in markers.ts. The live tier refuses to run
+// against any other version, because the wordings it matches on are version-bound.
+export const MEASURED_FREEBUFF_VERSION = "0.2.29";
+
+// The version gate for the live tier: ok only when the installed CLI is exactly the
+// measured one. null (unreadable metadata) and any mismatch refuse, and the refusal
+// names the capture re-measure path — capture drift dumps, promote them into the
+// corpus folder, add the RECORDED rows.
+export function measuredVersionReport(installed: string | null): { ok: boolean; message: string } {
+  if (installed === null) {
+    return {
+      ok: false,
+      message:
+        "Cannot read the installed freebuff version from the config-dir metadata; refusing to guess. " +
+        "Repair or reinstall the freebuff CLI so the metadata file reports its version.",
+    };
+  }
+  if (installed !== MEASURED_FREEBUFF_VERSION) {
+    return {
+      ok: false,
+      message:
+        `Installed freebuff ${installed}, but the screen wordings were measured against ${MEASURED_FREEBUFF_VERSION}. ` +
+        `Re-measure in capture mode: PI_FREEBUFF_CAPTURE=1 bun test tests/liveCapture.test.ts, ` +
+        `then promote the dumps into tests/fixtures/screen/${installed}/, add the RECORDED rows, ` +
+        `and set MEASURED_FREEBUFF_VERSION to ${installed} (tests/corpus.test.ts enforces the corpus contract).`,
+    };
+  }
+  return { ok: true, message: `freebuff ${installed} matches the measured screen wordings.` };
+}
+
 export const RECORDED: Record<string, { screen: KnownScreen | null; level: RecognitionLevel }> = {
   "0.1.0/error": { screen: "ready", level: "pass" },
   "0.1.0/ready": { screen: "ready", level: "pass" },
