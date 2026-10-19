@@ -1,0 +1,193 @@
+# pi-freebuff
+
+An in-process [OMP](https://omp.sh) extension that drives the freebuff CLI's
+terminal UI through a PTY. It runs one machine-wide freebuff Instance in one
+shared Workspace and exposes five tools, all `loadMode: "essential"`. It is the
+in-process replacement for the freebuff-supervisor MCP server/daemon: no
+daemon, no named pipe, no process of its own. Windows-only.
+
+The domain language (Instance, Lock, Phase, Verdict, Owner session, Detached
+Task, ...) is defined in [CONTEXT.md](CONTEXT.md); this README uses those words
+with those meanings. Decisions live in [docs/adr/](docs/adr/).
+
+## Install and update
+
+The repo checkout is the extension package (ADR-0005): `package.json` declares
+`omp.extensions: ["./src/index.ts"]`, and OMP loads the extension straight from
+the source tree — no build step.
+
+1. Create the junction OMP discovers extensions in, once, by hand:
+
+   ```
+   cmd /c mklink /J "%USERPROFILE%\.omp\agent\extensions\pi-freebuff" <checkout-path>
+   ```
+
+2. Register the same directory as an extension root so the bundled skill is
+   discovered. The junction walk loads extension code only; the skill provider
+   scans `<extension-root>/skills`, so without this step the skill is silently
+   ignored. Add the checkout (or junction) path to the `extensions:` setting in
+   `~/.omp/config.yml` (or the project config):
+
+   ```yaml
+   extensions:
+     - C:\projects\_llm\pi-freebuff
+   ```
+
+   `-e <path>` on the OMP command line works too.
+
+Reloading or updating means `git pull` in the checkout plus an OMP restart:
+there is no hot reload.
+
+## Prerequisites
+
+- Windows (the Workspace junction, `taskkill`, and the PTY host are
+  Windows-specific).
+- The freebuff CLI, installed and signed in once.
+- [Bun](https://bun.sh) for development (`bun install`, `bun test`,
+  `bun run typecheck`).
+
+## Tools
+
+All five tools return errors as
+`{isError: true, content: [<message>], details: {code, message, ...}}`; the
+`details` extras are listed per error below.
+
+### `freebuff_run { prompt: string }`
+
+Submits one Task and returns at the Ack, never with the answer (ADR-0006):
+
+- `{taskId, phase: "working"}` — the Task is in flight;
+- `{taskId, phase: "queued", position}` — another Task holds the Instance.
+
+The answer arrives later as an asynchronous aside push into the submitting
+conversation and stays pollable via `freebuff_progress`. One Task runs at a
+time; the queue holds four. If the queue is full the call fails with
+`{code: "busy", busy: true, position: 5}`. A Target that cannot be mounted
+(filesystem root, the Workspace itself or an ancestor) fails with `bad_target`
+before anything is allocated. A user Esc aborting the tool call detaches a
+working Task and cancels a queued or submitting one (ADR-0003).
+
+### `freebuff_progress { taskId?: string }`
+
+Polls one Task. Omitted `taskId` means the active Task, else the newest. The
+`details` carry `{taskId, phase, phaseSource, elapsedMs, verdict?, answer?,
+message?, archivePath?, screenExcerpt?, warnings?, position?}`. A `done` Task
+returns the verbatim answer as the tool text; a `failed` Task is an
+`isError` result carrying the Verdict, the reason and a screen excerpt.
+Errors: `unknown_task`, `not_owner`.
+
+### `freebuff_cancel { taskId?: string }`
+
+Stops the active Task through the cancel ladder (Esc, a wait, Ctrl-C up to
+three times, then a forced kill) and waits for it to settle, up to about five
+seconds, before returning `{taskId, verdict, archivePath?}`. If the Task
+finished inside the ladder's window the verdict is `done`. The Instance exits;
+the next Task spawns fresh; queued Tasks behind keep running. A queued Task
+named by `taskId` is dequeued instead and never started: the result is
+`{taskId, verdict: "cancelled"}` with no `archivePath`. Errors: `unknown_task`,
+`no_active_task`, `not_owner`.
+
+### `freebuff_status {}`
+
+Diagnostics, readable from any session — the one tool not owner-gated. The
+`details` combine the machine facts with this process's queue:
+`lock {state, ownerPid?, instancePid?, kind?, startedAt?}`, `instancePid?`,
+`target?` (the junction's current destination), `foreign.live`
+(`{pid, model, expiresAt}[]`, freebuff's own live-slot records), `archive
+{count, totalBytes, newestId?}`, `abandoned[]`, plus `queue {depth, taskIds}`
+and `activeTask`.
+
+### `freebuff_screen {}`
+
+Reads the Instance's flattened terminal screen. Owner-gated. Errors:
+`not_owner`, `no_instance`.
+
+## `/freebuff-doctor`
+
+A slash command, not a tool: the human runs it after a freebuff CLI update,
+before a real Task. It checks the keystroke whitelist and the screen
+classification over the recorded fixture corpus, and reads the live screen too
+when an Instance is readable. The report is deterministic — same inputs,
+byte-identical text — with the shape `{level: "pass" | "degraded" | "fail",
+checks: [{name, status, detail}], lines, text}`, and is delivered as an aside
+message.
+
+## Verdicts and errors
+
+Every Task ends under exactly one Verdict, a closed set of nine:
+`ack_missing`, `deadline`, `frozen`, `crashed`, `no_answer`, `driver_error`,
+`slot_held`, `displaced`, `cancelled`. A Task dropped before its first submit
+(queue dequeue, session death) archives nothing or no Verdict; an archive
+without a terminal Verdict reads as an Abandoned Task.
+
+Caller mistakes and freebuff failures are distinct. Refusals (`busy`,
+`bad_target`, `unknown_task`, `no_active_task`, `not_owner`, `no_instance`,
+`lock_busy`, `torn_down`) are structured tool errors naming what to change;
+a Task failure is an `isError` result carrying the Verdict, the reason, and a
+screen excerpt with the last lines the Instance showed.
+
+Between submit and settle a Task moves through the Phases: `queued`,
+`submitting`, `working`, `settling`, then `done` or `failed`.
+
+## On disk
+
+Everything lands in the plugin directory `%LOCALAPPDATA%\freebuff-plugin\`:
+
+- `lock.json` — the turn-scoped Lock, `{ownerPid, instancePid, kind, startedAt}`
+  (`kind` is `extension` or `keeper`); taken before a Task's spawn, deleted on
+  every exit path.
+- `errors.jsonl` — error lines the run watcher saw on the screen.
+- `tasks/<taskId>/` — the Task archive, written on every settle, success
+  included: `meta.json` (phase log, Verdict, timings, model, target),
+  `answer.md` (the full answer), `chat-messages.json`, `screen.txt`, and
+  `stderr.log` when non-empty. Never auto-pruned.
+- `freebuff-ws\` — the Workspace, the Instance's fixed working directory, with
+  the `repo` junction pointing at the Target (the session's cwd resolved to its
+  git root).
+
+Screen dumps are the one thing outside the plugin directory:
+`~/.config/manicode/screen-dumps/<version>/` — under freebuff's own config dir
+— holds the degraded and unrecognized frames the settle loop dumped, one file
+per freeze key, write-only.
+
+## Repository layout
+
+- `src/index.ts` — extension factory: the five tools, `/freebuff-doctor`,
+  per-session owner bindings.
+- `src/singleton.ts` — the process-scoped singleton: queue, Task registry,
+  ownership gate, Instance drive.
+- `src/turnRunner.ts` — one Task from Lock to Verdict: submit, Ack, watchdog,
+  archive.
+- `src/driver.ts` — the PTY driver for one Instance: spawn, whitelisted
+  keystrokes, screen reads, cancel ladder.
+- `src/settle.ts` — the settled-screen policy behind one function.
+- `src/lock.ts` — the `lock.json` record: take, classify, reclaim.
+- `src/workspace.ts` — Workspace directory, `repo` junction, Target resolution
+  and safety.
+- `src/status.ts` — `freebuff_status` data assembly.
+- `src/archive.ts` — Task archive writes and Abandoned-Task inference.
+- `src/config.ts` — screen geometry (48×160), the size every fixture captures.
+- `src/doctor.ts` — the deterministic doctor core.
+- `src/protocol/` — screen emulator and classifier, screen signatures, chat
+  store reader, keystroke whitelist, fixture corpus, recorded classification
+  table, markers.
+- `src/host/pty.ts` — the only host-internals seam (`@oh-my-pi/pi-natives`,
+  `@oh-my-pi/pi-utils/vterm`); enforced by `tests/hostSeam.test.ts`.
+- `skills/freebuff/SKILL.md` — the bundled skill the host loads on demand.
+- `tests/` — unit tests per module, corpus tests over the recorded screen
+  fixtures, the host-seam policy guard, stub end-to-end tests over
+  `tests/helpers/stub-freebuff.mjs`, and the SDK harness tier that drives the
+  extension factory in a real agent session (`tests/helpers/sdkHarness.ts`);
+  the runner config env (`PI_FREEBUFF_RUNNER_JSON`) is what points a run at a
+  real plugin directory instead of a test rig.
+
+## Pointers
+
+- [CONTEXT.md](CONTEXT.md) is the single domain reference — the glossary and
+  the prototype vocabulary this repo inherits; this README deliberately does
+  not duplicate it.
+- [docs/adr/](docs/adr/) records the decisions: ADR-0001 one turn-scoped Lock
+  in one shared Workspace; ADR-0002 the Keeper stays a scheduled script;
+  ADR-0003 three endings — cancel, detach, abandon; ADR-0004 Task state is
+  process-scoped; ADR-0005 the repo checkout is the extension package; ADR-0006
+  the run tool returns at the Ack.
