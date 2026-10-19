@@ -42,7 +42,7 @@ Two facts shape the rest:
 - A claimer polls the record (~100 ms) until it is free, up to its own Task deadline, then reports `busy` naming the holder. It never refuses first, and never silently takes over a running Turn.
 - Free record + live `instancePid` = an **orphan instance**. The claimer **reclaims** it: `taskkill /PID <instancePid> /T /F`, delete the record, re-point the junction at its own target, spawn in the same Workspace. Nothing is lost — `/new` precedes every Task, and the Hour resumes from the config-dir record.
 - The Lock is re-taken **per Task** as the in-session queue drains, so a second OMP window can interleave between queued Tasks. Holding it while the queue drains trades that fairness for one fewer respawn per handoff.
-- **Yield**: an Owner whose Instance dies unexpectedly releases the Lock and does **not** respawn; the next `run_prompt` spawns. Without this rule two sessions respawn into each other forever. Freeze, deadline and crash all end in kill + release + lazy respawn, which diverges from the prototype's respawn-immediately watchdog (its ADR-0001 §7).
+- **Yield**: an Owner whose Instance dies unexpectedly releases the Lock and does **not** respawn; the next `freebuff_run` spawns. Without this rule two sessions respawn into each other forever. Freeze, deadline and crash all end in kill + release + lazy respawn, which diverges from the prototype's respawn-immediately watchdog (its ADR-0001 §7).
 
 ### 3. Session end
 

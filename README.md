@@ -38,6 +38,23 @@ the source tree — no build step.
 Reloading or updating means `git pull` in the checkout plus an OMP restart:
 there is no hot reload.
 
+## Cutover
+
+The old surface is gone as of the 2026-10-20 cutover:
+
+- The `freebuff-supervisor` entry was deleted from
+  `%USERPROFILE%\.omp\agent\mcp.json` (backup: `mcp.json.bak-cutover` next to
+  it). OMP drives freebuff only through this extension.
+- The registered `Freebuff Streak Keeper` scheduled task runs this checkout's
+  `scripts\keeper.ts` under bun, same daily trigger with `-StartWhenAvailable`,
+  working directory the repo root.
+- The prototype repo `C:\projects\_llm\freebuff-mcp` is read-only, kept as the
+  port source; its README points here.
+
+A session opened before the cutover still mounts the old MCP server from its
+startup config: restart OMP to observe the new surface — there is no hot
+reload.
+
 ## Prerequisites
 
 - Windows (the Workspace junction, `taskkill`, and the PTY host are
@@ -122,9 +139,10 @@ day. Register it once, by hand:
 powershell -File scripts\register-keeper-task.ps1
 ```
 
-The task fires daily at 21:00 local (18:00 UTC on TRT); the allowance itself
-resets at 21:00 UTC. `-StartWhenAvailable` fires a missed slot on the next
-boot. `-Unregister` removes the task; `-WhatIf` dry-runs the registration.
+The task registers as `Freebuff Streak Keeper` and fires daily at 21:00 local
+(18:00 UTC on TRT); the allowance itself resets at 21:00 UTC.
+`-StartWhenAvailable` fires a missed slot on the next boot. `-Unregister`
+removes the task; `-WhatIf` dry-runs the registration.
 
 Each run (`scripts/keeper.ts`) probes before it touches anything: a chat dir
 or a Task archive started at or after 21:00 UTC means the day already had

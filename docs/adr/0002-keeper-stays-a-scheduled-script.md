@@ -28,6 +28,6 @@ The Keeper stays in this repo as a scheduled script, rewritten to drive freebuff
 
 ## Consequences
 
-- The daily job remains a Windows Scheduled Task, registered by the same setup step as today (repointed at this repo's script).
+- The daily job remains a Windows Scheduled Task, registered by the same setup step as today; since the 2026-10-20 cutover the `Freebuff Streak Keeper` task runs this repo's `scripts/keeper.ts`.
 - The Keeper is the second implementer of the Lock protocol, which is what keeps the protocol honest; a single-consumer lock would be over-fit to the extension.
 - A day OMP is open and used needs no Keeper action.
