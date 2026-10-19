@@ -38,11 +38,12 @@ export function hasUnrecognizedDump(configDir: string, version: string): boolean
 /** Dump one screen frame under screen-dumps/<version>/<kind>-<sha256 of freeze key>.ansi
  *  and return its path, or null when the write was skipped or failed. Countdown repaints
  *  dedupe to one file because the freeze key strips the countdown lines; the file keeps
- *  them. */
+ *  them. `capture` marks a frame the gated capture run sampled for corpus promotion; it
+ *  must never read as `unrecognized-`, the prefix the drift alarm counts. */
 export function writeScreenDump(
   configDir: string,
   text: string,
-  kind: "unrecognized" | "degraded",
+  kind: "unrecognized" | "degraded" | "capture",
 ): string | null {
   try {
     // The metadata version names the folder, "unknown" when unreadable, the same key

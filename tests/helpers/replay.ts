@@ -11,3 +11,8 @@ export const replayFixture = async (key: string): Promise<string> =>
   flattenScreen([
     readFileSync(new URL(`../fixtures/screen/${key}.ansi`, import.meta.url), "utf8").replace(/\n/g, "\r\n"),
   ]);
+
+// Replay an absolute-path capture (a live screen dump, not a corpus fixture)
+// the same way the PTY would emit it.
+export const replayAnsiFile = async (path: string): Promise<string> =>
+  flattenScreen([readFileSync(path, "utf8").replace(/\n/g, "\r\n")]);

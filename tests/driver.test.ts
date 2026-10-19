@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { FreebuffDriver, FreebuffDriverError } from "../src/driver";
+import { FreebuffDriver, FreebuffDriverError, resolveWindowsCommand } from "../src/driver";
 import { readChats } from "../src/protocol/chatStore";
 import { eventsOf, readInputLog } from "./helpers/stubInputLog";
 
@@ -287,6 +287,79 @@ describe("FreebuffDriver over the stub child", () => {
       const snaps = readChats(configDir, workspace);
       expect(snaps.map((snap) => snap.dirName)).toContain("chat-1");
       await driver.kill();
+    },
+    20_000,
+  );
+});
+
+describe("driver spawn seam (Windows)", () => {
+  test("start rejects when the application is not a Win32 executable", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "freebuff-config-"));
+    const workspace = mkdtempSync(join(tmpdir(), "freebuff-ws-"));
+    const notExecutable = join(configDir, "cli.txt");
+    writeFileSync(notExecutable, "not an executable");
+    const driver = new FreebuffDriver({ application: notExecutable, workspace, freebuffConfigDir: configDir });
+    // CreateProcessW fails with os error 193; the rejection must reach start(),
+    // never wedge it (the live tier hung exactly here, Lock claimed, no verdict).
+    await expect(driver.start()).rejects.toThrow(/os error 193/);
+  });
+
+  test("resolveWindowsCommand resolves a bare npm shim to its .cmd as the application", () => {
+    const shimDir = mkdtempSync(join(tmpdir(), "shim-dir-"));
+    writeFileSync(join(shimDir, "mycli"), "#!/bin/sh\necho sh shim\n");
+    writeFileSync(join(shimDir, "mycli.cmd"), "@echo off\r\necho hi\r\n");
+    const resolved = resolveWindowsCommand("mycli", {
+      PATH: shimDir,
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+    });
+    expect(resolved).toEqual({ application: join(shimDir, "mycli.cmd"), args: [] });
+  });
+
+  test("resolveWindowsCommand resolves a bare .exe directly", () => {
+    const shimDir = mkdtempSync(join(tmpdir(), "shim-dir-"));
+    writeFileSync(join(shimDir, "tool.exe"), "MZ");
+    const resolved = resolveWindowsCommand("tool", {
+      PATH: shimDir,
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+    });
+    expect(resolved).toEqual({ application: join(shimDir, "tool.exe"), args: [] });
+  });
+
+  test("resolveWindowsCommand passes paths through and leaves misses for CreateProcess to reject", () => {
+    expect(resolveWindowsCommand("C:\\some\\dir\\cli.exe", { PATH: "", PATHEXT: "" })).toEqual({
+      application: "C:\\some\\dir\\cli.exe",
+      args: [],
+    });
+    expect(resolveWindowsCommand("no-such-cli", { PATH: "", PATHEXT: "" })).toEqual({
+      application: "no-such-cli",
+      args: [],
+    });
+  });
+
+  test(
+    "a .cmd under a spaced directory spawns and runs (regression: ComSpec /s /c split spaced paths)",
+    async () => {
+      const spacedDir = mkdtempSync(join(tmpdir(), "shim dir with spaces-"));
+      const workspace = mkdtempSync(join(tmpdir(), "freebuff-ws-"));
+      const configDir = mkdtempSync(join(tmpdir(), "freebuff-config-"));
+      writeFileSync(join(spacedDir, "mycli.cmd"), "@echo off\r\necho SPACED-SHIM-OK\r\n");
+      const driver = new FreebuffDriver({
+        application: join(spacedDir, "mycli.cmd"),
+        workspace,
+        freebuffConfigDir: configDir,
+        timings: { settleMs: 2_000, ackMs: 1_000, pollMs: 25, pasteSettleMs: 50, pressThrottleMs: 100 },
+      });
+      try {
+        await driver.start();
+        await until(() => (driver.alive() ? null : true), 5_000);
+        expect(await driver.screenText()).toContain("SPACED-SHIM-OK");
+      } finally {
+        try {
+          await driver.kill();
+        } catch {
+          // already exited
+        }
+      }
     },
     20_000,
   );

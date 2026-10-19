@@ -140,6 +140,45 @@ Tasks are reported in the log, never resumed.
 `PI_FREEBUFF_RUNNER_JSON` plus `target`, e.g. to point a manual run at a test
 rig. Progress lines tee to the console and to `keeper.log` in the repo root.
 
+## Live tier and capture
+
+Two gated test modules drive the real installed freebuff CLI. They never run in
+CI and skip green unless their flag is set:
+
+```
+PI_FREEBUFF_LIVE=1 bun test tests/live.test.ts
+PI_FREEBUFF_CAPTURE=1 bun test tests/liveCapture.test.ts
+```
+
+Run the live tier before a release, when the installed freebuff version
+changes, or when a port defect is suspected; it consumes one real Hour-session
+task, so run it deliberately, not in a loop. It proves the version gate, Lock
+obedience and one full Task end to end. Run the capture mode when the corpus
+needs new screen dumps — it is the re-measure path for a drifted version.
+
+Both build their rig in temp directories (plugin dir, Workspace, a disposable
+`git init` Target): `%LOCALAPPDATA%\freebuff-plugin\` is never touched. Only
+freebuff's own config dir is real — login state, `freebuff-metadata.json`, and
+the capture dumps land there. The Lock is obeyed: with a foreign record held,
+the submit waits out its claim deadline and refuses with a message naming the
+holder pid; nothing spawns and the record is untouched.
+
+The screen wordings are version-bound: `MEASURED_FREEBUFF_VERSION` in
+`src/protocol/recorded.ts` records the version they were measured against, and
+a live run against any other version fails before spawning, naming the
+`PI_FREEBUFF_CAPTURE=1` re-measure path.
+
+Capture samples the live screen across one Task, writes every unique frame to
+`~/.config/manicode/screen-dumps/<version>/` (one file per freeze key), and
+prints a promotion-ready table of dump file → identity/level. Promote a dump:
+
+1. Copy it into `tests/fixtures/screen/<version>/`, keeping the hash file
+   name.
+2. Add its `<version>/<file>` row to `RECORDED` in
+   `src/protocol/recorded.ts`, naming the screen it shows.
+3. `bun test tests/corpus.test.ts` enforces the corpus contract.
+4. Review the captures for private data before committing.
+
 ## Verdicts and errors
 
 Every Task ends under exactly one Verdict, a closed set of nine:
@@ -212,7 +251,9 @@ per freeze key, write-only.
   fixtures, the host-seam policy guard, stub end-to-end tests over
   `tests/helpers/stub-freebuff.mjs`, and the SDK harness tier that drives the
   extension factory in a real agent session (`tests/helpers/sdkHarness.ts`);
-  the runner config env (`PI_FREEBUFF_RUNNER_JSON`) is what points a run at a
+  the gated live modules over the real CLI (`tests/live.test.ts`,
+  `tests/liveCapture.test.ts`) share the rig in `tests/helpers/live.ts`; the
+  runner config env (`PI_FREEBUFF_RUNNER_JSON`) is what points a run at a
   real plugin directory instead of a test rig.
 
 ## Pointers
