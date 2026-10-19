@@ -2,7 +2,7 @@
 // Proves AC #2 (record spans the child, gone on every exit path), AC #3 (wait,
 // then busy naming the holder; never take over a running Turn) and AC #4 (dead
 // owner, old record, own pid without a live Task are all reclaimed).
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
@@ -13,6 +13,7 @@ import {
   classifyLock,
   pidAlive,
   readLock,
+  reclaimLock,
   releaseLock,
   setLockInstancePid,
   withLock,
@@ -222,6 +223,59 @@ describe("claimLock", () => {
     });
     expect(result.claimed).toBe(false);
     if (!result.claimed) expect(result.holder).toEqual(record);
+  });
+});
+
+// A torn write leaves a file readLock rejects (numeric startedAt, truncated
+// JSON): it names no live owner, so it is a Stale Lock — reclaimable whatever
+// it claims (#14) — and a claim must take the Lock, never spin on EEXIST.
+describe("malformed lock.json on disk (torn write)", () => {
+  const seedRaw = (content: string): void => {
+    writeFileSync(join(pluginDir, "lock.json"), content);
+  };
+
+  test("claimLock reclaims a numeric startedAt and leaves a well-formed record", async () => {
+    seedRaw(
+      JSON.stringify({ ownerPid: FOREIGN_OWNER, instancePid: FOREIGN_INSTANCE, kind: "extension", startedAt: NOW }),
+    );
+    const killPid = mock(async (_pid: number) => {});
+    const result = await claimLock(pluginDir, "extension", {
+      ...deps([]),
+      killPid,
+      deadlineMs: 5_000,
+      pollMs: 100,
+    });
+    if (!result.claimed) throw new Error(`expected claim, got ${JSON.stringify(result)}`);
+    // One poll passes between the reclaim and the take, so the record carries
+    // the clock after that sleep.
+    expect(readLock(pluginDir)).toEqual({
+      ownerPid: process.pid,
+      instancePid: null,
+      kind: "extension",
+      startedAt: startedAt(NOW + 100),
+    });
+    expect(killPid).not.toHaveBeenCalled();
+  });
+
+  test("claimLock reclaims truncated garbage JSON", async () => {
+    seedRaw('{"ownerPid": 111111111, "kind": "ext');
+    const result = await claimLock(pluginDir, "extension", { ...deps([]), deadlineMs: 5_000 });
+    if (!result.claimed) throw new Error(`expected claim, got ${JSON.stringify(result)}`);
+    expect(readLock(pluginDir)?.ownerPid).toBe(process.pid);
+  });
+
+  test("reclaimLock deletes a malformed record", async () => {
+    seedRaw(JSON.stringify({ ownerPid: FOREIGN_OWNER, instancePid: null, kind: "keeper", startedAt: NOW }));
+    await reclaimLock(pluginDir, deps([]));
+    expect(readLock(pluginDir)).toBeNull();
+    expect(existsSync(join(pluginDir, "lock.json"))).toBe(false);
+  });
+
+  test("a missing file is still free and valid records classify unchanged", () => {
+    expect(readLock(pluginDir)).toBeNull();
+    expect(classifyLock(null, deps([]))).toBe("free");
+    const live = seed({});
+    expect(classifyLock(live, deps([FOREIGN_OWNER]))).toBe("held-by-other");
   });
 });
 

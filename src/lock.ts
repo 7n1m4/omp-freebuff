@@ -3,7 +3,7 @@
 // the Task yields, on every exit path. See ADR-0001; the third staleness
 // case (own pid, no live Task) is ADR-0004.
 import { execFile } from "node:child_process";
-import { closeSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -147,7 +147,13 @@ export async function reclaimLock(
   const doSleep = deps?.sleep ?? realSleep;
   const pollMs = deps?.pollMs ?? DEFAULT_POLL_MS;
   const stale = readLock(pluginDir);
-  if (!stale) return;
+  if (!stale) {
+    // No record, but the file may still sit there from a torn write: readLock
+    // rejects it, so it names no live owner and is stale all the same
+    // ("reclaimable whatever it claims", issue #14). A missing file: done.
+    if (existsSync(lockPath(pluginDir))) releaseLock(pluginDir);
+    return;
+  }
   if (stale.instancePid !== null && isPidAlive(stale.instancePid)) {
     await killPid(stale.instancePid);
     const deadline = now() + KILL_TIMEOUT_MS;
@@ -173,7 +179,15 @@ export async function claimLock(
   const deadline = now() + deps.deadlineMs;
   for (;;) {
     const record = readLock(pluginDir);
-    switch (classifyLock(record, { now, isPidAlive, hasLiveTask })) {
+    // classifyLock reads null for both a missing file (free) and a torn write
+    // its validation rejects; only the filesystem tells them apart. The
+    // malformed file is a Stale Lock — reclaimable whatever it claims (#14) —
+    // so it must reach the stale path, not spin in the free branch forever.
+    const state =
+      record === null && existsSync(lockPath(pluginDir))
+        ? "stale"
+        : classifyLock(record, { now, isPidAlive, hasLiveTask });
+    switch (state) {
       case "free": {
         try {
           // Our record goes down with instancePid null BEFORE any spawn (ADR-0001).
@@ -186,6 +200,14 @@ export async function claimLock(
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
           // Lost the take race: fall through to sleep, re-read, re-classify.
+          // The retry is bounded by the claim deadline: once it expires, name
+          // the freshly-read winner. If the disk still holds only a malformed
+          // record there is no winner to name — loop so the stale path deletes
+          // it instead of skipping classification.
+          if (now() >= deadline) {
+            const winner = readLock(pluginDir);
+            if (winner) return { claimed: false, busy: true, holder: winner };
+          }
         }
         break;
       }
