@@ -6,6 +6,7 @@
 // is captured from the first execute's ctx. The session_start/shutdown journal
 // entries are the load markers later tickets build the phase log on.
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { runDoctor } from "./doctor";
 import { defaultFreebuffConfigDir, freebuffStatus, type StatusResult } from "./status";
 import type { FreebuffSingleton, OwnerBinding, ProgressDetails, SettlePush, SubmitOk } from "./singleton";
 import { getFreebuffSingleton, peekFreebuffSingleton } from "./singleton";
@@ -330,6 +331,40 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
         return { content: [{ type: "text", text }], details };
       } catch (error) {
         return errorResult(error);
+      }
+    },
+  });
+
+  // A slash command, not a tool: the model never calls it, the user runs it
+  // after a freebuff update to re-prove the keystroke whitelist and the screen
+  // recognition. The owner-gated screen read doubles as the liveness probe:
+  // any refusal or throw just means no readable Instance, and the report
+  // covers the corpus checks alone.
+  pi.registerCommand("freebuff-doctor", {
+    description:
+      "Run the freebuff doctor: the keystroke-whitelist and screen-drift checks over the recorded fixtures, " +
+      "plus the Instance's current screen when one is readable; the check to run after a freebuff update.",
+    handler: async (_args, ctx) => {
+      let liveScreen: { text: string; configDir: string } | undefined;
+      try {
+        const text = await singletonOf().screenText(bindingFor(pi, ctx));
+        liveScreen = { text, configDir: runnerOptions().freebuffConfigDir };
+      } catch {
+        // No readable Instance: the corpus checks still run.
+      }
+      const report = await runDoctor({ ...(liveScreen === undefined ? {} : { liveScreen }) });
+      try {
+        pi.sendMessage(
+          {
+            customType: "pi-freebuff",
+            content: report.text,
+            display: true,
+            details: { kind: "doctor", level: report.level, checks: report.checks },
+          },
+          { deliverAs: "aside" },
+        );
+      } catch {
+        // A push to a gone session must never fail the command.
       }
     },
   });

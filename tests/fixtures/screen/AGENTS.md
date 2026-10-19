@@ -37,7 +37,7 @@ holds the drifted screen.
 1. Copy the dump into `<version>/` here, keeping the SHA file name. Create the
    folder if the corpus lacks that version.
 2. Read the frame and add its `<version>/<file>` row to `RECORDED` in
-   `tests/corpus.test.ts`, naming the screen it shows.
+   `src/protocol/recorded.ts`, naming the screen it shows.
 3. If a marker no longer matches, adjust `src/protocol/markers.ts` /
    `signatures.ts` until the corpus test passes on every version folder and
    every `negative/` frame stays unrecognized.

@@ -10,10 +10,11 @@ import { fileURLToPath } from "node:url";
 export const CORPUS_DIR = join(fileURLToPath(new URL("../..", import.meta.url)), "tests", "fixtures", "screen");
 
 // Version folder names currently on file, read live so promoting a dump into the
-// corpus clears the drift signal without a restart.
-export const corpusVersions = (): string[] => {
+// corpus clears the drift signal without a restart. `dir` defaults to the shipped
+// corpus; tests and the doctor pass a corpus root explicitly.
+export const corpusVersions = (dir: string = CORPUS_DIR): string[] => {
   try {
-    return readdirSync(CORPUS_DIR, { withFileTypes: true })
+    return readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && /^\d/.test(entry.name))
       .map((entry) => entry.name);
   } catch {

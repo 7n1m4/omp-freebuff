@@ -43,6 +43,7 @@ import type { ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import freebuff from "../src/index";
 import { killInstance, pidAlive } from "../src/lock";
+import { classifyScreen } from "../src/protocol/screen";
 import type { FreebuffSingleton, OwnerBinding, ProgressDetails, SettlePush, SubmitOk } from "../src/singleton";
 import { getFreebuffSingleton, resetFreebuffForTests } from "../src/singleton";
 import type { TurnRunnerOptions } from "../src/turnRunner";
@@ -212,6 +213,23 @@ const pushMessages = (harness: Harness): { customType: string; content: unknown;
     entry.type === "custom_message" && entry.customType === "pi-freebuff" ? [entry] : [],
   );
 
+// Producer is src/index.ts's /freebuff-doctor command: report.text as the
+// content, the { kind, level, checks } summary as details. Narrowed by typeof
+// here, so every read below is checked; the settle push never matches (no
+// doctor header, no string level).
+const doctorPushesOf = (harness: Harness): { content: string; level: string }[] => {
+  const pushes: { content: string; level: string }[] = [];
+  for (const entry of pushMessages(harness)) {
+    if (typeof entry.content !== "string" || !entry.content.startsWith("freebuff doctor:")) continue;
+    const { details } = entry;
+    if (typeof details !== "object" || details === null) continue;
+    if (!("kind" in details) || details.kind !== "doctor") continue;
+    if (!("level" in details) || typeof details.level !== "string") continue;
+    pushes.push({ content: entry.content, level: details.level });
+  }
+  return pushes;
+};
+
 const waitFor = async (predicate: () => boolean, budgetMs = 15_000): Promise<void> => {
   const { promise, resolve } = Promise.withResolvers<void>();
   const tick = (): void => {
@@ -266,6 +284,19 @@ const observePhases = async (
     const { promise, resolve } = Promise.withResolvers<void>();
     setTimeout(resolve, 5);
     await promise;
+  }
+};
+
+// Polls the live screen through the same seam the /freebuff-doctor command
+// reads, until the classifier names the expected identity (25 ms steps, like
+// the phase polls above).
+const waitForScreenIdentity = async (harness: Harness, identity: string, budgetMs = 15_000): Promise<void> => {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    const text = await singleton().screenText(directBinding(harness)).catch(() => "");
+    if (classifyScreen(text).identity === identity) return;
+    if (Date.now() > deadline) throw new Error(`waitForScreenIdentity: screen never classified as ${identity}`);
+    await sleep(25);
   }
 };
 
@@ -1186,6 +1217,91 @@ describe("freebuff tool surface over the singleton (harness tier)", () => {
         // The settle failed before any keystroke: nothing but the spawn logged.
         expect(kindsOf(readInputLog(rig.inputLog))).toEqual(["spawn"]);
         await waitFor(() => !pidAlive(spawnPid(rig.inputLog)));
+      } finally {
+        await owner.dispose();
+      }
+    },
+    60_000,
+  );
+
+  // -- /freebuff-doctor: the slash-command surface (#24) ------------------------
+
+  test(
+    "freebuff-doctor is a registered command and the tool surface stays the five essentials",
+    async () => {
+      const owner = await createHarnessSession({ extensions: [freebuff] });
+      try {
+        expect(owner.session.extensionRunner!.getRegisteredCommands().map(command => command.name)).toContain(
+          "freebuff-doctor",
+        );
+        // The host session carries its own built-in tools; the extension's
+        // contribution is exactly the five essentials, and no tool of any
+        // origin is a doctor (the doctor is the slash command above).
+        expect(
+          owner.session
+            .getActiveToolNames()
+            .filter(name => name.startsWith("freebuff_"))
+            .sort(),
+        ).toEqual(["freebuff_cancel", "freebuff_progress", "freebuff_run", "freebuff_screen", "freebuff_status"]);
+        expect(owner.session.getActiveToolNames().some(name => /doctor/i.test(name))).toBe(false);
+      } finally {
+        await owner.dispose();
+      }
+    },
+    20_000,
+  );
+
+  test(
+    "/freebuff-doctor runs locally and prints the same all-pass report twice",
+    async () => {
+      const owner = await createHarnessSession({ extensions: [freebuff], responses: [...SPARES] });
+      try {
+        expect(await owner.session.prompt("/freebuff-doctor")).toBe(false);
+        await waitFor(() => doctorPushesOf(owner).length > 0);
+        const first = doctorPushesOf(owner)[0]!;
+        const text = first.content;
+        expect(text).toContain("freebuff doctor: pass");
+        for (const name of [
+          "whitelist/cost-modal-enter",
+          "whitelist/continue-enter",
+          "whitelist/take-over-no-enter",
+          "whitelist/unnamed-frame-no-keys",
+          "drift/0.2.29/ready",
+        ]) {
+          expect(text).toContain(name);
+        }
+        expect(text).toMatch(/checks: \d+ pass, 0 degraded, 0 fail$/);
+        expect(first.level).toBe("pass");
+
+        await waitFor(() => !owner.session.isStreaming);
+        expect(await owner.session.prompt("/freebuff-doctor")).toBe(false);
+        await waitFor(() => doctorPushesOf(owner).length > 1);
+        expect(doctorPushesOf(owner)[1]!.content).toBe(first.content);
+      } finally {
+        await owner.dispose();
+      }
+    },
+    20_000,
+  );
+
+  test(
+    "/freebuff-doctor classifies the live stub screen while a task is in flight",
+    async () => {
+      openRig("happy", { endDelayMs: 1500 });
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...runCall(PROMPT), ...SPARES],
+      });
+      try {
+        expect(await owner.session.prompt("run it")).toBe(true);
+        expect((lastToolResult(owner, "freebuff_run").details as SubmitOk).phase).toBe("working");
+        await waitForScreenIdentity(owner, "working");
+
+        expect(await owner.session.prompt("/freebuff-doctor")).toBe(false);
+        await waitFor(() => doctorPushesOf(owner).length > 0);
+        const text = doctorPushesOf(owner)[0]!.content;
+        expect(text).toContain("freebuff doctor: pass");
+        expect(text).toContain("screen/current: current screen: working (pass)");
       } finally {
         await owner.dispose();
       }

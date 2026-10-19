@@ -20,6 +20,7 @@ import { withLock, type LockDeps } from "./lock";
 import { COUNTDOWN_REGEX, END_SESSION } from "./protocol/markers";
 import { classifyScreen, errorLines, EXCERPT_LINES, freezeKey, screenExcerpt } from "./protocol/screen";
 import { partialAnswer as partialAnswerOf, type TurnBaseline } from "./protocol/chatStore";
+import { enterWhitelisted } from "./protocol/whitelist";
 import { readJunctionTarget } from "./workspace";
 
 // The nine-set from CONTEXT. This runner's own paths produce ack_missing,
@@ -708,10 +709,16 @@ export class TurnRunner {
       const text = await driver.screenText();
       const read = classifyScreen(text);
       if (read.identity === "working") return true;
-      if (read.identity === "draft" && !draft.enterFired && (text.includes(END_SESSION) || COUNTDOWN_REGEX.test(text))) {
+      if (
+        read.identity === "draft" &&
+        !draft.enterFired &&
+        enterWhitelisted(read.identity, read.level, {
+          usageRow: text.includes(END_SESSION) || COUNTDOWN_REGEX.test(text),
+        })
+      ) {
         draft.enterFired = true;
         driver.press("\r");
-      } else if (read.identity === "cost modal" && read.level === "pass" && !modalConfirmed) {
+      } else if (read.identity === "cost modal" && enterWhitelisted(read.identity, read.level) && !modalConfirmed) {
         modalConfirmed = true;
         driver.press("\r");
       }

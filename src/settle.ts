@@ -4,6 +4,7 @@
 // seam. No process, no PTY, no timer of its own: every effect and every tick arrive
 // through io.
 import { classifyScreen, EXCERPT_LINES, freezeKey, screenExcerpt } from "./protocol/screen";
+import { enterWhitelisted } from "./protocol/whitelist";
 
 /** The loop's only effects, injected. press() sends one whitelisted keystroke — the
  *  only key this policy ever sends is "\r", and only into a recognized Continue or
@@ -91,12 +92,14 @@ export async function awaitSettled(
           return { ok: false, reason: "displaced", excerpt: screenExcerpt(text, EXCERPT_LINES) };
         case "Continue":
           // The Hour session is out of credits; one Enter per call re-arms it.
-          if (!continuePressed && (await tryPress())) continuePressed = true;
+          if (!continuePressed && enterWhitelisted(read.identity, read.level) && (await tryPress()))
+            continuePressed = true;
           break;
         case "cost modal":
           // The first submit of a fresh Hour session confirms its cost modal;
           // Esc would leave the draft in the box. One Enter per call.
-          if (!modalConfirmed && (await tryPress())) modalConfirmed = true;
+          if (!modalConfirmed && enterWhitelisted(read.identity, read.level) && (await tryPress()))
+            modalConfirmed = true;
           break;
         default:
           // working, draft, connecting, blank: a transient or in-flight screen —
