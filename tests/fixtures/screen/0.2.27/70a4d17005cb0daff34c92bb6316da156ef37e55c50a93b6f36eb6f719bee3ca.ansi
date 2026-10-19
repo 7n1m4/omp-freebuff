@@ -1,0 +1,48 @@
+  minTokens  ( :254 ). Test asserts  targetTokens: 41  and  draft.minimumTokens === 41 .                                                                        
+  4. Manual drain-failure accounting — met.  summarizer-engine.js:389  sets  tally.promotionFailed = true  (no  failed++ ), halts loop;  :431-437  skips end-   
+  of-run normalization, so drain runs once;  run-outcome.js:73  keeps  completed  gated on  promotionCompleted  → status  partial ,  failed: 0 . Genuine        
+  failures still  tally.failed++  ( :377 ); other consumers ( createProgress ) untouched.                                                                       
+  5.  mergeCount  threaded  validatePromotionCandidate  →  validatePromotionSize  ( promotion-candidate.js:169,180 );  getPromotionSummaryTokenTarget           
+  signature unchanged.                                                                                                                                          
+  6. Tests exist at both public seams for all four cases.                                                                                                       
+  7. Out of scope respected: no  src/entry  changes,  call-profile.js  untouched, no LAYER_MIN_RATIO/slider/threshold/drain-selection edits.                    
+                                                                                                                                                                
+  Scope creep: none found. Diff is floor computation +  promotionFailed  tally flag + required tests;  promotion-planner.js  change is a docstring only.        
+                                                                                                                                                                
+  Suspect-but-correct:  layer0-compression.js:388-410  keeps its own promotion-repair fallback using  repair.targetTokens ; it is only reached when  repair.    
+  diagnostics  is absent, and  promotion-candidate.js:107  always supplies diagnostics, so it does not mask the effective floor. No action.                     
+                                                                                                                                                                
+  No missing, partial, or wrong requirements.                                                                                                                   
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The task was a review task. I completed it: reviewed the diff, ran tests, reported PASS. The final completion check asks to compare deliverables with       
+     request. The request was a review/report, not code changes. I already did it. Nothing more to repair—no code changes were mine. Let me give concise        
+    final answer. Let me double check: the user asked "Review the uncommitted work... Report under 500 words." I did. I should verify my report's key           
+    claims once more? I already ran the full test suite and lint after reading the final files. No files changed since. So no need to rerun. Give concise       
+     final answer.                                                                                                                                              
+                                                                                                                                                                
+  Review complete; no code changes were needed or made.                                                                                                         
+                                                                                                                                                                
+  Verified                                                                                                                                                      
+  -  git diff HEAD  inspected against all 7 spec points.                                                                                                        
+  -  npx vitest run  → 79 files / 868 tests pass (exit 0). Targeted suites pass:  promotion-candidate.test.js  10,  summarizer-engine.test.js  11.              
+  -  npx eslint  on the 6 changed files → 0 errors; 2  jsdoc/require-returns  warnings shown pre-existing on  HEAD .                                            
+                                                                                                                                                                
+  Result: PASS. All spec requirements met (floor formula at  promotion-candidate.js:186-188 , hard max unchanged, diagnostics minimum at  :254-255 , manual     
+  drain-failure accounting at  summarizer-engine.js:389,431-437 ). No scope creep; out-of-scope areas untouched.                                               ▄
+                                                                                                                                                               █
+  Limitations: Findings rest on the repo's test helpers (length-based tokenizer) and stubbed dispatch, not the live summarizer request path. No runtime/       █
+  dashboard check was possible (extension context), but the spec's acceptance criteria are code-level and fully covered by the new unit tests.                 █
+                                                                                                                                             ⎘ • 2m 37s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Compare AI Reviewers By Bug-Finding Accuracy                                                                                                            Ad │ 
+ │ Use Greptile to compare AI reviews with side-by-side code diffs and real bug detection.                                                                    │ 
+ │  Try Greptile  greptile.com                                                                                                                                │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│
+ │ │     …                │                                                                                                                                   ││
+ │▍AEnter a coding task or / for commands                                                                                                                     ││
+                                                                                                                                                              │╰
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: New chat                                                     
+ ← for history · ? for help                                                                                                                                     

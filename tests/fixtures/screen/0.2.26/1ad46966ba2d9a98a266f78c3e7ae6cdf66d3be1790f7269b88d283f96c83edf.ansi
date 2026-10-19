@@ -1,0 +1,48 @@
+  C4 — implemented.  mergeState  copies  t  ( state.ts:111 ); iterates only patch keys (absent untouched,  state.ts:113 );  null  deletes ( state.ts:115-116    
+  ); objects merge key-wise recursively ( state.ts:117-118 ); arrays/scalars replace ( state.ts:120-121 ). All four tests present.                              
+                                                                                                                                                                
+  C5 — implemented.  DEFAULT_PARAMS {32768,3,3}  ( state.ts:31 );  readParams  picks finite numbers else default ( state.ts:48-58 ). Tests cover valid,         
+  partial, absent, non-numeric.                                                                                                                                 
+                                                                                                                                                                
+  C6 — partial. Rules for C2/C4/C5 and load failures are covered. No test covers C3 (rejected patch leaves state untouched).                                    
+                                                                                                                                                                
+  Scope creep.                                                                                                                                                  
+  -  validateValue   case undefined: return null  ( state.ts:82-83 ): an untyped subschema accepts anything. Spec lists the six types only; "absent type =      
+  no constraint" is an added lenient rule (tested at  state.test.ts  "subschema with no type").                                                                 
+  -  number  uses bare  typeof === "number"  ( state.ts:86-87 ), so  NaN / Infinity  pass. Spec does not define this; likely unintended.                        
+  -  readParams  silently coerces non-finite/non-number to default ( state.ts:50-51 ); spec only says "parse with defaults", silent on garbage. Defensive,      
+  minor.                                                                                                                                                        
+                                                                                                                                                                
+  Verdict: FAIL (not clean). C3 partial — no apply op and no test that a rejected patch leaves state untouched. Also spec §14 notify on schema failure is       
+  missing ( index.ts:38 ). Everything else matches.                                                                                                             
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The task was a review, not code changes. I delivered the report. Completion check: verify the report addressed all asks. No repairs requested. I            
+    should just confirm final answer concisely. The user asked for a report under 500 words with per-criterion status and scope creep. Done. No code            
+    edits needed. I verified tests/typecheck. Nothing missing. I'll give concise final confirmation.                                                            
+                                                                                                                                                                
+  Review delivered, no code changes made (task was review-only). Verified state:                                                                                
+  -  git diff HEAD  + read  state.ts ,  state.test.ts ,  index.ts ,  tsconfig.json  — matches changed paths.                                                    
+  -  bun test : 54 pass / 0 fail.  npx tsc --noEmit : exit 0. Both ran after final file state.                                                                  
+  - Report under 500 words, per-criterion status with spec quote + file:line, scope creep flagged.                                                              
+                                                                                                                                                                
+  Findings: C1/C2/C4/C5 implemented; C3 partial (no combined apply op; rejected-patch-leaves-state-untouched not encoded or tested); C6 partial (no test for   █
+  C3). Scope creep: untyped-subschema accept-all ( state.ts:82-83 ),  number  admits  NaN / Infinity  ( state.ts:86-87 ),  readParams  silent coercion.        █
+  Extra divergence: spec §14 wants a notify on schema load failure;  index.ts:38  swallows it silently. Verdict: FAIL (C3 not clean).                          █
+                                                                                                                                                               █
+  Limitations: no harness-level run; review judged the state core only, not the projection/compaction paths (out of issue #4 scope).                           █
+                                                                                                                                                ⎘ • 48s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Join us                                                                                                                                                 Ad │ 
+ │ Discord invite: 15 Freebucks                                                                                                                               │ 
+ │  Join  freebuff.com                                                                                                                                        │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+ 16m left · 43.2K (4%)                                                                                                                           ✕ End session  
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: Work inside the repo/ folder in the current directory.       
+ Review the uncommitted work in this repo: ...                                                                                                                  
+ ← for history · ? for help                                                                                                                                     

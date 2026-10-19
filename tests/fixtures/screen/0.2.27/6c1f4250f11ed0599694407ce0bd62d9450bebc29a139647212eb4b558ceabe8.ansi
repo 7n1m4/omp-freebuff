@@ -1,0 +1,48 @@
+  a test, and not required by issue #31's testing decisions.                                                                                                    
+                                                                                                                                                                
+  Suggested followups:                                                                                                                                          
+  → Pin typeless key                                                                                                                                            
+  → Review docs                                                                                                                                                 
+  → Verify degradation live                                                                                                                                     
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    Everything requested verified. Read-only respected: I made no file edits. Commands run: git diff, gh issue view, grep, bun run typecheck && bun test,       
+     bun -e eval (no edits). No repairs needed. Report done. Give concise final answer. No further checks needed — files unchanged since the passing run.       
+     Note limitation: typeless-key case unpinned (noted). Also test count 313.                                                                                  
+                                                                                                                                                                
+  Final check complete — request fully satisfied, no repairs needed.                                                                                            
+                                                                                                                                                                
+  Verified                                                                                                                                                      
+  -  git diff 5eb8002...HEAD : 7 commits implementing issue #31 (root patch operators, in-place degradation, knowledge bag), fetched via  gh issue view 31 .    
+  - Finding re-check: new rule rejection at  src/state.ts:158  —  state key "<target>" does not accept <op>: the operators are legal only against array-        
+  typed keys  — fires in the patch-root walk ( validateRootOperators ) before the payload-array check, so no payload example is chased. Reproduced live         
+  through  validatePatch  on string, object and typeless declared keys, plus the still-accepting array and undeclared keys.                                     
+  - Pins updated and exact:  test/state.test.ts:369  (object  $append ),  :371  ( $append  on string),  :372  ( $remove  on string),  :533  ( $remove  on       
+  object). Spec scope clause restored:  docs/spec.md:145  in the section 6 validation bullets.                                                                  
+  - Checks:  bun run typecheck && bun test  run once, exit status preserved →  EXIT=0 ,  313 pass / 0 fail ,  tsc --noEmit  clean. No file changed after        
+  that run, so no rerun required.                                                                                                                               
+  - Issue #31 coverage: operators/collisions/unknown- $ /op-shaped data ( src/state.ts:107-165 ),  additionalProperties  schema + knowledge bag ( src/state.    
+  ts:186-195 ,  docs/spec.md:100,143 ), degradation ( src/projection.ts:117,122,157 ,  src/procedure.ts  stepPrompt branch,  docs/spec.md:168-172 ), ADRs       
+  0004–0006, CONTEXT terms, v0.3.0.                                                                                                                             
+  - Scope creep: none — no  $promote / $declare , no cap enforcement, no harness block-path change, no dual grammar in tracked files.                           
+                                                                                                                                                                
+  Limitations                                                                                                                                                   
+  - A typeless declared key ( {} ) also rejects operators; consistent with  docs/spec.md:145  ("array-typed keys" only) but not directly pinned by a test.      
+  Not required by the issue's testing decisions.                                                                                                                
+  -  .scratch/review-plan.md  still quotes the old nested grammar; it is untracked and gitignored, so not part of the committed work.                          █
+                                                                                                                                                               █
+  Read-only respected: no files edited. Result:  PASS .                                                                                                        █
+                                                                                                                                             ⎘ • 1m 47s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Measure Developer Productivity and AI Impact                                                                                                            Ad │ 
+ │ Improve software delivery performance with DX's code-level signals and AI coding tool usage analytics.                                                     │ 
+ │  Learn More  getdx.com                                                                                                                                     │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: Work inside the repo/ folder in the current directory. Final 
+ re-review of the committed work in t...                                                                                                                        
+ ← for history · ? for help                                                                                                                                     

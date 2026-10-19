@@ -1,0 +1,48 @@
+  8.  docs/spec.md:161  (minor). Calls the windowed tool results an exception to the head's "stored objects" rule, but they are items 5–6, not head items       
+  1–4; only  (item 7)  disambiguates.                                                                                                                           
+                                                                                                                                                                
+  Clean                                                                                                                                                         
+                                                                                                                                                                
+  No new dependencies. Glossary terms (Pair tag, Window notice, Observation window, Nudge, Head, Per-call message) used per CONTEXT.md, no forbidden            
+  synonyms. Spec §7/§16 order (notice before consolidation before idle) matches  src/procedure.ts:207-211 . Cap/tag interaction matches §7. New tests assert    
+  projection and step-prompt seams, not internals.                                                                                                              
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The task was a review only — read-only. Deliverable: report under 500 words with PASS or findings citing file:line. I delivered that. No edits were         
+    made. Checks run: tsc exit 0, bun test 296 pass. Nothing to repair. Confirm final answer concise.                                                           
+                                                                                                                                                                
+  Done. Review deliverable complete; no code edits requested or made.                                                                                           
+                                                                                                                                                                
+  Verified                                                                                                                                                      
+  -  git diff HEAD  fully inspected (docs/spec.md, skills/zstate/SKILL.md, src/index.ts, src/messages.ts, src/procedure.ts, src/projection.ts, 5 test files).   
+  - Repo standards read: CONTEXT.md glossary, docs/spec.md §7/§16/§20, AGENTS.md; skills tdd/ponytail/documenting-code/caveman loaded.                          
+  -  tsc --noEmit  → exit 0.                                                                                                                                    
+  -  bun test  → 296 pass, 0 fail (exit 0). Not re-run since no files changed.                                                                                  
+                                                                                                                                                                
+  Report delivered (under 500 words):                                                                                                                           
+  - Verdict: PASS with findings.                                                                                                                                
+  - 1 hard violation:  src/index.ts:196  comment claims the same loaded params object reaches both rules deliveries; the two  loadStateSchema  calls ( src/     
+  index.ts:149 ,  :195 ) are independent, so byte-equality rests on deterministic reload, not identity. Same overstatement in spec §20.                         
+  - 7 judgement calls/smells: Feature Envy ( src/procedure.ts:209 ), Data Clumps/Primitive Obsession ( src/messages.ts:172 ), Mysterious Name ( src/messages.   
+  ts:64 ), Tautological test ( test/projection.test.ts:708 ), fixture drift ( test/projection.test.ts:35 ), redundant CONTEXT.md pointers ( src/projection.     
+  ts:25 ,  src/messages.ts:166 ), spec §7 head/item wording ( docs/spec.md:161 ).                                                                               
+  - Clean: no new deps; glossary terms correct; spec §7/§16 order matches code; tests at seams.                                                                 
+                                                                                                                                                                
+  Limitations                                                                                                                                                  ▄
+  - Standards review only — I did not verify runtime behavior against a real omp session (docs/verification.md is the ground truth for that).                  █
+  - Findings are advisory; nothing was repaired since the request was to review, not edit.                                                                     █
+                                                                                                                                                               █
+                                                                                                                                             ⎘ • 1m 38s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Turn audio into searchable transcripts                                                                                                                  Ad │ 
+ │ Streamline your technical documentation and code reviews with Transkriptor's developer transcription integrations.                                         │ 
+ │  Try Transkriptor  textintelfze.pxf.io                                                                                                                     │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: Work inside the repo/ folder in the current directory.       
+ Review the uncommitted work: run `git diff...                                                                                                                  
+ ← for history · ? for help                                                                                                                                     

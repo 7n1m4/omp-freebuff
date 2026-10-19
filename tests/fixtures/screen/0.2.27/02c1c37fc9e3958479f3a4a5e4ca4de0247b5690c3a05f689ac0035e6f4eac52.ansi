@@ -1,0 +1,48 @@
+  (6) docs.  docs/spec.md  gains exactly one line,  src/types.ts  shared types: the harness message union and the structural object predicate , inside          
+  section 17's tree ( ## 17. Packaging ). No other doc change (diff --name-only: one doc).                                                                      
+                                                                                                                                                                
+  (b) scope creep: none. Only classifier rewires, map extraction, required doc line.  test/projection.test.ts:4  import move is forced by the relocation,       
+  not extra.                                                                                                                                                    
+                                                                                                                                                                
+  No requirement partial, missing, or implemented-wrong.                                                                                                        
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The review is complete. Both checks ran green with exit status preserved. Final answer concise.                                                             
+                                                                                                                                                                
+  ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮   
+  │ Security Review On Every Pull Request                                                                                                                Ad │   
+  │ Secure your codebase before it ships with Greptile’s automated security reviews and vulnerability detection.                             greptile.com ↗ │   
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯   
+                                                                                                                                                                
+  Review complete; no repairs needed (no code changed after the two checks, so no re-run required).                                                             
+                                                                                                                                                                
+  Verified against request:                                                                                                                                     
+  -  git diff HEAD  reviewed in full (8 files, one doc line).                                                                                                   
+  -  bun run typecheck  → exit 0.                                                                                                                               
+  -  bun test  → exit 0, 252 pass / 0 fail (status captured via  PIPESTATUS[0] , not swallowed by  tail ).                                                      
+                                                                                                                                                                
+  Deliverable check:                                                                                                                                            
+  - Exact paths/interfaces:  isPlainObject  single def at  src/types.ts:9 , deleted from  src/state.ts ; all importers rewired ( src/branch.ts:3 ,  src/        
+  messages.ts:2 ,  src/projection.ts:2 ,  src/index.ts:8 ).                                                                                                     
+  - Format/strings:  disengageLabels  map ( src/index.ts:52-62 ) is sole trigger home;  /clear  compare reads it ( src/index.ts:335 ); every notice string      
+  byte-identical per hunk and per test assertion ( test/harness.ts:91 ).                                                                                        
+  - Docs: exactly one added line, section 17, no other doc change.                                                                                              
+                                                                                                                                                                
+  Verdict: PASS. No failed or unrunnable checks. Limitation:  session_before_branch  reason  fork / btw  is reachable by the real harness type but not         █
+  driven by the fake ( test/fake-session.ts  only emits  "branch"  in  rewindTo ); correctness there rests on the type-union coverage ( SessionBranchReason    █
+  = "branch"|"fork"|"btw" ) and map keys, not a runtime test.                                                                                                  █
+                                                                                                                                             ⎘ • 1m 32s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Auto top-up                                                                                                                                             Ad │ 
+ │ Don't stall mid-task.                                                                                                                                      │ 
+ │  Top up  freebuff.com                                                                                                                                      │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+ 7m left · 50.9K (5%)                                                                                                                            ✕ End session  
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: Work inside the repo/ folder in the current directory.       
+ Review the uncommitted work: run `git diff...                                                                                                                  
+ ← for history · ? for help                                                                                                                                     

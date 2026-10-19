@@ -96,6 +96,14 @@ changes. Grows as wayfinder tickets resolve.
   Screen showing the working state — with the Screen half re-cut for 0.2.29: the
   composer placeholder `Add to the current task` is the working marker and the
   `working · <n>s · ■ Esc` ticker is retired.
+- **Displaced screen**: what an Instance shows after another session took the
+  Hour slot: the ready look (transcript, placeholder input box) with the usage
+  row replaced by a ticking chip row. Placeholder present **and** usage row
+  absent is the discriminator; ridden out with zero keystrokes, the Task fails
+  as `displaced`.
+- **Draft screen**: the stranded first submit — the submitted text still in the
+  composer, the footer chat segment `Chat: New chat`, no welcome box. Classified
+  `draft`, never drift; recovered with a single bare Enter, never a re-paste.
 - **Task archive**: `<plugin dir>/tasks/<taskId>/` — `meta.json` (phase log,
   Verdict, timings, `instancePid`, model, target repo), `answer.md`
   (`fullResponse`), `chat-messages.json` (verbatim copy), `screen.txt` (the

@@ -1,0 +1,48 @@
+  "the session is ordinary". The implementation takes §175's reading (matches the lens's "ordinary afterwards" and the test). Flagging because the §166/§175    
+  tension is real.                                                                                                                                              
+  3.  OPERATING_RULES  ( patch.ts:8 ) is defined and exported but delivered nowhere; §7 requires it as a message at engage. Explicitly out of scope for this    
+  issue — noted, not a finding.                                                                                                                                 
+  4. Renderer adds a 6-key cap with  …  and a collapsed  skill-state state · N keys  label ( index.ts:55-60 ). §12:217 only asks for "readable"; cosmetic       
+  scope creep, harmless.                                                                                                                                        
+  5.  PATCH_MARKER  ( patch.ts:4 ) is only used inside  FENCE_OPEN ; fine against §8:160.                                                                       
+                                                                                                                                                                
+  No missing requirements beyond the explicitly out-of-scope projection items; no substantive unrequested behaviour.                                            
+                                                                                                                                                                
+  Suggested followups:                                                                                                                                          
+  → Fix unclosed fence                                                                                                                                          
+  → Test degrade step                                                                                                                                           
+  → Build projection                                                                                                                                            
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The task was a review, not code change. I delivered PASS + observations. Verification: ran tsc (clean) and bun test (76 pass). I didn't modify files.       
+     Deliverable is the report. Nothing more to do. Final concise answer.                                                                                       
+                                                                                                                                                                
+  Review complete. No files edited; nothing to rerun.                                                                                                           
+                                                                                                                                                                
+  Verified                                                                                                                                                      
+  -  npx tsc --noEmit : clean (exit 0).                                                                                                                         
+  -  bun test : 76 pass, 0 fail across 3 files.                                                                                                                 
+  - Read  git diff HEAD  plus both untracked files in full; traced every lens path in  index.ts / patch.ts / state.ts  against spec §6:117-137, §8:158-177,     
+  §12:213-218.                                                                                                                                                  
+                                                                                                                                                                
+  Result: PASS. No missing requirements, no scope creep worth blocking, no wrong implementation. All five requirements and all nine listed lens paths check     
+  out with the citations already reported.                                                                                                                      
+                                                                                                                                                                
+  Remaining limitations / notes                                                                                                                                █
+  - Only non-blocking observations stand (unclosed  json state  fence treated as empty patch; the §8:166 vs §8:175 tension on whether the degrade step's own   █
+  tool calls block; undelivered  OPERATING_RULES  — explicitly out of scope; cosmetic renderer extras).                                                        █
+  - Not covered by checks: the harness itself was not exercised end to end (no live omp run), so  assistant_message / tool_call  ordering and  deliverAs:      █
+  "aside"  behaviour rest on the provided harness reference and the mock-based tests, not a real session.                                                      █
+                                                                                                                                              ⎘ • 2m 3s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ The agent that wrote it should not be the only thing checking it.                                                                                       Ad │ 
+ │ Get an independent second look at uncommitted changes with full codebase context and suggested fixes.                                                      │ 
+ │  Start for free  coderabbit.ai                                                                                                                             │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│
+ │ │     …                │                                                                                                                                   ││
+ │▍AEnter a coding task or / for commands         d.                                                                                                        │ ││
+ ─                        ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │╰
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: New chat                                                     
+ ← for history · ? for help                                                                                                                                     

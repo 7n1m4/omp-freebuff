@@ -1,0 +1,48 @@
+  keeps idle/retry policy-neutral (procedure.ts:101). Spec §7/§14 and CONTEXT "Degraded step" match.                                                            
+  - ADR 0006 knowledge bag —  additionalProperties?: boolean | JsonSchema  (state.ts:14) validated like a declared member with member path (state.ts:186-192)   
+  ; zstate  knowledge  off  volatile  → core (state.schema.json:9, state.schema.json:13); teaching in SKILL.md, not operating rules.                            
+  - Glossary distinctness —  degradationNoticeMessage  wording/comment never borrows the procedure's degrade (messages.ts:200); test pins  not.toContain(       
+  "degrade") .                                                                                                                                                  
+  - ADR 0002 — channel untouched (src/index.ts unmodified).                                                                                                     
+                                                                                                                                                                
+  Judgement calls (baseline smells, not hard violations):                                                                                                       
+  1. Repeated Switches / Shotgun Surgery — operator dispatch is duplicated across validate and merge:  if (key !== "$append" && key !== "$remove")  (state.     
+  ts:133) and  if (root && (key === "$append" || key === "$remove"))  (state.ts:281, again state.ts:293). A third operator would need edits in  OPERATORS ,     
+  validateRootOperators , the  validateObject  skip, and  mergeState . Benign while CONTEXT fixes the count at "Exactly two exist".                             
+  2. Documenting-code: em-dash in comments — new comments use em-dash, e.g. state.ts:120  ...its target key — item-wise...  and procedure.ts:194  ...policy-    
+  neutral — projected goes false... . The skill bans em-dash in comments; the repo's spec/ADR/comments are em-dash-heavy, so this is consistency vs the         
+  skill, judgement only.                                                                                                                                        
+  3. ADR 0005 wording — "the complete pairs that survive" is never exercised: the newest-first walk always yields an empty window on degradation (projection.   
+  ts:121). Spec §7 states "the worst case is head plus an empty window", so this is ADR prose, not behavior.                                                    
+                                                                                                                                                                
+  No Mysterious Name, Feature Envy, Data Clumps, Primitive Obsession, Divergent Change, Message Chains, Middle Man, or Refused Bequest found in the diff.       
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The task was read-only review. I completed it. No files edited. I ran the required check once (typecheck && test) — green. Report under 500 words           
+    delivered. Nothing missing. Final concise answer. I should confirm the deliverable vs request: report PASS, findings cite file:line, distinguish hard       
+     vs judgement, check run once. Done. No repairs needed since read-only. Give concise final answer.                                                          
+                                                                                                                                                                
+  Deliverable complete; review was read-only, no files edited.                                                                                                  
+                                                                                                                                                                
+  Verified:                                                                                                                                                     
+  -  git diff 5eb8002...HEAD  (4 commits, 18 files) read with issue #31 and ADR 0002/0004/0005/0006, spec.md, CONTEXT.md as standards.                          
+  -  bun run typecheck && bun test  run once: typecheck clean, 312 pass / 0 fail.                                                                               
+  - Report delivered under 500 words, verdict PASS, with three judgement-call notes (repeated operator switch; em-dash comments; ADR 0005 "surviving pairs"    ▄
+  wording) each cited  file:line , and hard violations distinguished (none found).                                                                             █
+                                                                                                                                                               █
+  Limitations: no findings rose to a hard spec/ADR/glossary violation, so there were no repairs to rerun. Nothing blocked.                                     █
+                                                                                                                                             ⎘ • 2m 44s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ The agent that wrote it should not be the only thing checking it.                                                                                       Ad │ 
+ │ Review uncommitted changes and find bugs in your codebase with CodeRabbit's full repository context.                                                       │ 
+ │  Start Reviewing  coderabbit.ai                                                                                                                            │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+ 58m left · 99.3K (9%)                                                                                                                           ✕ End session  
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: Work inside the repo/ folder in the current directory.       
+ Review the committed work in this repo: ru...                                                                                                                  
+ ← for history · ? for help                                                                                                                                     

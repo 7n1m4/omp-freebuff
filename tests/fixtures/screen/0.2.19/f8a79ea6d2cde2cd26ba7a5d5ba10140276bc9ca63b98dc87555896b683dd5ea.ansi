@@ -1,0 +1,48 @@
+                                                                                                                                                                
+  (b) Scope creep — none material. One cosmetic hunk:  docs/fuel-monitor-spec.md:71-76  re-pads the extraction-contract table (whitespace only, unrelated to    
+  #43). Harmless, but unrelated churn.                                                                                                                          
+                                                                                                                                                                
+  (c) Wrong implementations — none.                                                                                                                             
+  -  knownWithinHorizon  boundary  <=  matches "prune when > 72h" (spec §9).                                                                                    
+  - Session filters known entries by  start , prune by  completion ; same predicate, different  now , so no double definition — a session boundary crossing     
+  only shifts by one cycle.                                                                                                                                     
+  -  applyScan  stays pure: builds new objects, never mutates  prev .                                                                                           
+                                                                                                                                                                
+  Nit (comment accuracy, not behavior):  src/state.ts:33  says  lastPresentAt  is "ISO local time", but  applyScan  writes  opts.now.toISOString()  (UTC  Z )   
+  . Both are valid ISO; the comment overstates "local". The  docs/visit-score-table.md  §6 claim that the brand-slope formula is exercised by the real-fit      
+  end-to-end test is accurate ( test_main_real_fit_end_to_end ), though no test asserts the formula string itself — reverting it would not fail a test.         
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The review is complete. Nothing edited. No repairs needed. Report concise final answer.                                                                     
+                                                                                                                                                                
+  Review complete, no code changed. Nothing to repair.                                                                                                          
+                                                                                                                                                                
+  Verified                                                                                                                                                      
+  -  git diff HEAD  fully read, incl. untracked  docs/adr/0004-vanished-markers-outlive-report-retention.md .                                                   
+  -  npm run typecheck  clean.                                                                                                                                  
+  -  npm test  → 429/429 pass (exit 0).                                                                                                                         
+  -  uv run ... pytest tools/test_visit_table.py  → 42/42 pass (exit 0), incl. real bambi/nutpie fit of  (1 + s1 + c1 | brand) .                                
+  - All spec clauses mapped to  file:line  (state map/parse/prune/refresh, session union loop + name order + no-markers-on-failed-discovery, tool formula/      
+  нет /subtitle/ignored read, docs CONTEXT/ADR/spec §7§9§12/visit-table §2§3§4§6).                                                                              
+                                                                                                                                                                
+  Result: PASS. No requirement missing or partial; no wrong implementation.                                                                                     
+                                                                                                                                                                
+  Limitations (non-blocking)                                                                                                                                    
+  -  docs/fuel-monitor-spec.md:71-76 : whitespace-only table re-pad, unrelated to #43 (cosmetic churn, not behavior).                                           
+  -  src/state.ts:33 : comment says "ISO local time" but  applyScan  writes UTC  Z  ISO. Comment-only inaccuracy; spec only requires ISO.                       
+  - No test asserts the literal formula string; the real-fit end-to-end run exercises but would not catch a revert. Not required by the spec.                  ▄
+                                                                                                                                                               █
+  Checks failed: none. Checks not run: none relevant.                                                                                                          █
+                                                                                                                                              ⎘ • 9m 9s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Auto top-up                                                                                                                                             Ad │ 
+ │ Don't stall mid-task.                                                                                                                                      │ 
+ │  Top up  freebuff.com                                                                                                                                      │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│
+ │ │     …                │                                                                                                                                   ││
+ │▍AEnter a coding task or / for commands                                                                                                                     ││
+                                                                                                                                                              │╰
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: New chat                                                     
+ ← for history · ? for help                                                                                                                                     

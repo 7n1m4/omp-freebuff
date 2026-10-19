@@ -1,0 +1,48 @@
+  abstractions, no speculative config. Not scope creep.                                                                                                         
+                                                                                                                                                                
+  Commands                                                                                                                                                      
+                                                                                                                                                                
+  -  bun test  → 103 pass, 0 fail (227 expect calls, 4 files).                                                                                                  
+  -  bun run typecheck  → exit 0 ( tsc --noEmit ).                                                                                                              
+                                                                                                                                                                
+  No findings.                                                                                                                                                  
+                                                                                                                                                                
+  Suggested followups:                                                                                                                                          
+  → Standards review                                                                                                                                            
+  → Harness identity test                                                                                                                                       
+  → Cache-prefix check                                                                                                                                          
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The review is complete. I already ran the tests (103 pass, 0 fail) and typecheck (exit 0), verified against spec sections and the harness. I made no        
+    code changes, so no re-runs needed. The report is under 500 words. Let me give a concise final answer.                                                      
+                                                                                                                                                                
+  Review complete. No code changed, so no re-runs needed.                                                                                                       
+                                                                                                                                                                
+  Verdict: PASS — all 8 spec requirements met, no findings.                                                                                                     
+                                                                                                                                                                
+  Verified:                                                                                                                                                     
+  - Read  git diff HEAD  +  git status --short ; read  projection.ts / projection.test.ts  in full.                                                             
+  - Mapped each requirement to code: engage asides ( index.ts:139-146 ), projection order/pairing ( projection.ts:48,67-71,80,83 ), drops ( :30-33 ), cap +     
+  marker floor ( :91-145 ), no-mutation/fresh copy ( :120,124,157 ),  undefined  fallbacks ( index.ts:153,157 ;  projection.ts:43,61,67 ).                      
+  - Confirmed against harness  emitContext  ( runner.ts:1969-2036 ): returned same-ref head/pinned messages keep their stored-history link; only truncated      
+  results are per-call.                                                                                                                                         
+                                                                                                                                                                
+  Checks:                                                                                                                                                       
+  -  bun test  → 103 pass, 0 fail (exit 0, verified via  PIPESTATUS ).                                                                                          
+  -  bun run typecheck  → exit 0 ( tsc --noEmit ).                                                                                                             █
+                                                                                                                                                               █
+  Limitations: only the spec axis was reviewed. Identity/cache behaviour was confirmed by reading the harness and unit tests, not by driving a live provider   █
+  session end to end.                                                                                                                                          █
+                                                                                                                                             ⎘ • 3m 27s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ The agent that wrote it should not be the only thing checking it.                                                                                       Ad │ 
+ │ Review uncommitted changes and find bugs in your codebase with CodeRabbit's full repository context.                                                       │ 
+ │  Start Reviewing  coderabbit.ai                                                                                                                            │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│
+ │ │     …                │                                                                                                                                   ││
+ │▍AEnter a coding task or / for commands         d.                                                                                                        │ ││
+ ─                        ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │╰
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: New chat                                                     
+ ← for history · ? for help                                                                                                                                     

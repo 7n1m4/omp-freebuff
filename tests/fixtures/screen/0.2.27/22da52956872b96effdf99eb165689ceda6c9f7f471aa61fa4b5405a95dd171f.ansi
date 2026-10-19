@@ -1,0 +1,48 @@
+                                                                                                                                                                
+  PASS on the two residuals                                                                                                                                     
+                                                                                                                                                                
+  1. Corrected examples on every operator-shape rejection — resolved. src/state.ts:137  state key "$append" must be an object mapping state keys to item        
+  arrays, e.g. {"$append": {"findings": [items]}} ; src/state.ts:145  ...keep only one operator, e.g. {"$append": {"findings": [items]}} ; src/state.ts:154     
+  state key "$append.findings" must be an array of items, e.g. {"$append": {"findings": [items]}}  (unknown-operator :134 and set+op :144, :148 carry           
+  examples too). All pinned by exact-string  toBe  in test/state.test.ts:421,432,475,484,546,552,558,564,569,571,596,597.                                       
+                                                                                                                                                                
+  2. Degraded-window wording — resolved and accurate. CONTEXT.md:85: "sends the head and a degradation notice riding that step — the walk collects pairs        
+  newest first, so an unbuildable newest pair leaves no window to send". docs/adr/0005-projection-degrades-in-place.md:3: "nothing survives an unbuildable      
+  newest pair and the degraded window is empty". Code agrees: src/projection.ts:121,126,161 return  { head }  when  collected === 0 . Old "complete pairs       
+  that survive" text purged everywhere.                                                                                                                         
+                                                                                                                                                                
+  Suite:  bun run typecheck && bun test  → exit 0, 313 pass / 0 fail / 799 expect(), 9 files. Not rerun (no file changed).                                      
+                                                                                                                                                                
+  One finding (story 2, partial)                                                                                                                                
+                                                                                                                                                                
+  Operator against a non-array-typed target: the emitted example is unsatisfiable, so the retry cannot land. src/state.ts:154 prints its example for any non-   
+  array payload, then src/state.ts:238/:263 rejects that example's shape. Live:                                                                                 
+  -  {"$append":{"goal":["x"]}}  →  state key "$append.goal" must be a string (was array)                                                                       
+  - follow it →  state key "$append.goal" must be an array of items, e.g. {"$append": {"goal": [items]}}                                                        
+                                                                                                                                                                
+  Two texts demand each other's shape; on the new  knowledge  bag (object-typed) the example itself is rejected. Spec line quoted for the requirement —         
+  issue #31 story 2: "a rejected patch to name the exact misplacement with a corrected example, so that my retry lands on the first try." The rule that         
+  explained it was dropped from the spec: docs/spec.md:145 no longer says "The  $append  and  $remove  operators are legal only against array-typed keys; an    
+  object-typed key rejects them", while docs/spec.md:136 still says "a key that holds a non-array value is replaced by the appended list". Pre-change           
+  message named the rule ( state key "meta" does not accept $append ); test/state.test.ts:369 now pins the weaker text.                                         
+                                                                                                                                                                
+  Fix direction: name the operator-scope rule when the target declares a non-array type; restore the spec clause.                                               
+                                                                                                                                                                
+  Nothing else missing or partial (stories 3–20 each have code plus a pinning test; §7 spec, ADRs 0004–0006, README, zstate, package 0.3.0 all updated). No     
+  scope creep; every touched path is named by #31's decisions. Limitations: review only; no real-session run, so the degrade path rests on unit/adapter-fake    
+  witnesses as the issue anticipates.                                                                                                                          █
+                                                                                                                                             ⎘ • 2m 31s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Auto top-up                                                                                                                                             Ad │ 
+ │ Don't stall mid-task.                                                                                                                                      │ 
+ │  Top up  freebuff.com                                                                                                                                      │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+ 35m left · 82.5K (8%)                                                                                                                           ✕ End session  
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: Work inside the repo/ folder in the current directory. Final 
+ re-review of the committed work in t...                                                                                                                        
+ ← for history · ? for help                                                                                                                                     

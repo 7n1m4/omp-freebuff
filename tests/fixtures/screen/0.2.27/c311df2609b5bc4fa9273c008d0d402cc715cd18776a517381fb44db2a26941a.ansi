@@ -1,0 +1,48 @@
+  Net: one tooling-enforced hard violation (reformat  promotion-candidate.js ); everything else is judgement calls.                                             
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    ... It returned 0 oddly, but the warn output is authoritative). Fine. I don't need to redo anything. Let me give a concise final answer. The review is      
+    complete. No code changes were made (review only). I should not re-run checks since nothing changed. Confirm the deliverable matches the request:           
+    per-file findings, hard vs judgement, under 500 words. Should I offer to apply the prettier fix? Could suggest followups. The system says end with          
+    suggestions normally, but final completion check asks for concise final answer. I'll provide the final answer and maybe followups. Let me keep it           
+    concise.                                                                                                                                                    
+                                                                                                                                                                
+  Review task complete — the deliverable was the standards report, not a code change, so no source files were edited.                                           
+                                                                                                                                                                
+  What was verified                                                                                                                                             
+  -  git diff HEAD  read in full against root/ src / tests   AGENTS.md ,  CONTEXT.md , ADR-0019/0023.                                                           
+  -  npx vitest run tests/promotion-candidate.test.js tests/summarizer-engine.test.js  → 21 passed (output inspected, not just exit code).                      
+  -  npx tsc --noEmit  → exit 0.                                                                                                                                
+  -  npx prettier --check  on all six changed files → fails on  src/core/promotion-candidate.js  only.                                                          
+                                                                                                                                                                
+  Reported findings (matched request format: file:line, hard vs judgement)                                                                                      
+  - Hard:  src/core/promotion-candidate.js:180,188  violate Prettier print width (AGENTS.md → Commands, pre-commit formats the whole repo).                     
+  - Judgement:  promotion-planner.js:16-23  stale  @param p.targetTokens - Slider target T ;  tests/summarizer-engine.test.js:307-325  duplicated               
+  beforeEach ;  promotion-candidate.js:180,186-189  Data Clumps;  run-outcome.js:24-27  typedef drift for  promotionFailed .                                    
+  - Correctness of the change itself was confirmed clean on every documented rule (tally semantics, notify recorder, boundary advance, vocabulary, no shim/     
+  legacy constant).                                                                                                                                             
+                                                                                                                                                                
+  Limitations                                                                                                                                                   
+  - The Prettier violation is real but was left unfixed, since the request was a review ("Report …"), not a repair. The pre-commit hook will reformat it on     
+  commit.                                                                                                                                                       
+  -  eslint / knip / jscpd  were not run — those enforce the specific tooling rules the review explicitly excludes from the smell baseline.                     
+                                                                                                                                                                
+  No further action needed unless you want the formatting fix applied.                                                                                          
+                                                                                                                                                                
+  Suggested followups:                                                                                                                                         ▄
+  → Fix formatting                                                                                                                                             █
+  → Fix stale docs                                                                                                                                             █
+  → De-dupe test setup                                                                                                                                         █
+                                                                                                                                             ⎘ • 2m 57s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Auto top-up                                                                                                       ────────────────────────────────────  Ad │ 
+ │ Don't stall mid-task.                                                                                                                                      │ 
+ │  Top up  freebuff.com                                                                                                                                      │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│
+                                                                                                                                                              │ 
+▍AddEnter a coding task or / for commands         d.                                                                                                        ││││
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: New chat                                                     
+ ← for history · ? for help                                                                                                                                     

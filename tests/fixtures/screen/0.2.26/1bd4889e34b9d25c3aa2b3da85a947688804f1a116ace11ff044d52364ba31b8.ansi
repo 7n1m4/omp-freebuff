@@ -1,0 +1,48 @@
+  - Check 2:  build_predictions(cut, cfg, drop=PRUNE_COLUMN, vanished=cut_markers, sessions=log.sessions, logits=logits)  (bench.py:233-235, 422-424) —         
+  identical to  _ablations ' none_95 call (bench.py:326-328),  scalar / fit  left default so the #69 rescale rides.  none_98  stays in  FEATURE_NAMES  (        
+  forecast.py:50-51). No forecast.py/table.py diff.                                                                                                             
+  - Check 5: nothing flips into force; no ADR, page or digest change; no scope creep beyond  PRUNE_COLUMN  naming the literal "none_95" and docstring reflow.   
+                                                                                                                                                                
+  Check 3 — equality is a real invariant, not coincidence. Confirmed. run_bench appends  cells  inside  for origin in days[2:]  then  for r in scored_rows  (   
+  bench.py:213, 270-271); per origin the block is contiguous.  _ablations  rebuilds  by_origin  by iterating  cells  in order (bench.py:311-313), so            
+  by_origin.items()  yields origins in first-appearance order — the run_bench origin order — and each group preserves the append order.  p  is flattened        
+  group-by-group (bench.py:330-331), giving element-wise the same index → cell mapping as  prune_p ;  y/keys/sids/dry  come from the same  cells  (bench.py:    
+  316-319). Identical  build_predictions  args and identical cut expression ( at[:10] <= origin ) make the tables bit-equal. So  scores[PRUNE].log_loss ==      
+  ablation none_95  (test:1643-1644) is sound.                                                                                                                  
+                                                                                                                                                                
+  (b) Not-asked behaviour — none.                                                                                                                               
+                                                                                                                                                                
+  (c) Looks-implemented-but-wrong — none.                                                                                                                       
+                                                                                                                                                                
+  Minor, non-blocking: prune_table is built for origins that later  continue  (no scored rows), a wasted call, not a defect.                                    
+                                                                                                                                                                
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The review is complete. I did read-only review. Final answer already given. Provide concise final answer. Verified: git diff HEAD read, 4 files,            
+    tests ran 84 passed, no edits made. I should confirm the final response is consistent. Done. Give concise final answer.                                     
+                                                                                                                                                                
+  Review complete, read-only. No files edited, committed, or formatted.                                                                                         
+                                                                                                                                                                
+  Verified:                                                                                                                                                     
+  -  git diff HEAD  touches exactly the 4 named files; forecast.py/table.py/ADRs/production untouched.                                                          
+  -  pytest tools/test_bench_predict.py -q  → 84 passed (exit 0).                                                                                               
+  - AC1/AC2/AC3 all hold; slot 4 in both blocks, floors-only verdict intact, doc §6/§8 and tests updated (seven→eight), no pin weakened.                        
+  - Equality pin sound:  _ablations  p-list order is derived from the same  cells  sequence as  prune_p , so the log-loss equality is a real invariant.        ▄
+                                                                                                                                                               █
+  Checks failed / could not run: none. The generator payload byte-identity (AC3) was confirmed structurally (bench.py is not in the generator import path),    █
+  not by re-running the generator against reverted code, since that would require editing.                                                                     █
+                                                                                                                                                               █
+  Result: PASS.                                                                                                                                                █
+                                                                                                                                             ⎘ • 1m 42s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Meet devs                                                                       ──────────────────────────────────────────────────────────────────────  Ad │ 
+ │ Join the chat: 15 Freebucks                                                                                                                                │ 
+ │  Join  freebuff.com                                                                                                                                        │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│
+                                                                                                                                                              │ 
+▍AddEnter a coding task or / for commands         d.                                                                                                        ││││
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ 
+DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: New chat                                                      
+← for history · ? for help                                                                                                                                      

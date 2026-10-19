@@ -1,0 +1,48 @@
+                                                                                                                                                                
+  Standing judgement calls (unchanged, still defensible):                                                                                                       
+  1. ADR-0008 verbatim citation comment — carries the rule, no pointer.                                                                                         
+  2. Latest-record fold in both  table.py:170-180  (carried-vanish flag) and  bench.py  station index — same shape, different fields/purpose; the table's       
+  comment names the bench parity deliberately ( table.py:156-162 ), so extracting a shared shape would cost more than it saves.                                 
+                                                                                                                                                                
+  Low-value observations not counted as findings:                                                                                                               
+  - The dry-note literal  " · нет бензина (станция исчезла из выдачи 2GIS)"  repeats in  cellHtml  and  showCellDetail  ( render.py ) — duplication pre-        
+  exists this change and survived earlier rounds.                                                                                                               
+  - Em-dashes in a few new comments match the repo's pervasive comment style (bench.py, cli.py), so consistent with surrounding density.                        
+                                                                                                                                                                
+  Not in scope, noted once:  test_bench_predict.py:28  still carries a bare  docs §2:  citation, but that file is unmodified here.                              
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The task was a review; I delivered the report. Final completion check: verify deliverables match. I already ran the test suite (110 passed) and             
+    reviewed. No edits were made by me, so no repairs needed. Let me give a concise final answer. No files changed by me, so no re-run needed. Everything       
+     verified. Report limitations: node-based tests are skipped if node not on PATH? Actually pytest reported 110 passed — if node were missing they'd be       
+     skipped, but 110 passed with no skips shown. Let me note that. Give concise final answer.                                                                  
+                                                                                                                                                                
+  Deliverable: a Standards-lens review of the uncommitted work in  repo/ , reported under 500 words with file:line citations. Verdict PASS.                     
+                                                                                                                                                                
+  Verified:                                                                                                                                                     
+  -  pytest tools -q  → 110 passed, exit 0 (explicit exit-status capture, not just filtered output). No skips, so the node-based client-span tests ran.         
+  - Scope:  git status  shows only the four intended  tools/  files modified ( test_visit_table.py ,  visit_table/{cli,render,table}.py );  src/ ,  docs/ ,     
+  model.py ,  bench.py ,  bench-baseline.json  untouched, matching the spec's "untouched" list.                                                                 
+  - Residual finding resolved:  test_visit_table.py:450  now cites  ADR 0008/0009: .                                                                            
+  - Retired vocabulary ( fitted cell ,  stamp day ,  dry carryover , solid-fill kind names) absent from names/comments/UI/test prose; sanctioned terms used     
+  exactly.                                                                                                                                                      
+  - Both standing judgement calls (ADR-0008 citation comment; latest-record fold in  table.py  + bench) remain defensible as previously marked.                 
+                                                                                                                                                                
+  Failed/could-not-run checks: none. I made no edits, so no repair or re-run was required after the last passing check.                                        ▄
+                                                                                                                                                               █
+  Limitations: the review is judgement-based, not mechanically enforced; the two low-value observations (repeated dry-note literal, em-dash comment style)     █
+  were deliberately not counted as findings because neither is newly introduced and both match existing repo patterns. Historical commit context (specific     █
+  prior PR numbers) was unavailable to this host, so the review relied on the prompt's stated context for the earlier rounds.                                  █
+                                                                                                                                             ⎘ • 4m 56s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Join us                                                                                                                                                 Ad │ 
+ │ Discord invite: 15 Freebucks                                                                                                                               │ 
+ │  Join  freebuff.com                                                                                                                                        │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│
+ │ │     …                │                                                                                                                                   ││
+ │▍AEnter a coding task or / for commands         d.                                                                                                        │ ││
+ ─                        ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │╰
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: New chat                                                     
+ ← for history · ? for help                                                                                                                                     

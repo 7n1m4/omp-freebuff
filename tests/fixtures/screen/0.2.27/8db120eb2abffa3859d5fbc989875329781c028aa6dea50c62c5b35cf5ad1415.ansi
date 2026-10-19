@@ -1,0 +1,48 @@
+  Notes (no action)                                                                                                                                             
+                                                                                                                                                                
+  -  WindowPair.tag  ( src/projection.ts:19 ) is production-dead as a source:  windowTags  re-parses the text line; only tests read  pair.tag . Mandated by     
+  the return shape, and read-back needed for multi-result pairs, so not a second home of the rule.                                                              
+  - Fold witness re-pointed at channel ( test/channel.test.ts:455 ) with the observable order/revert claim kept; no equivalence test added — matches issue      
+  decisions.                                                                                                                                                    
+                                                                                                                                                                
+  Fix: refresh  README.md:5,27 ; reword  CONTEXT.md:45 ; replace  test/projection.test.ts:152  with a pinned-literal comparison or delete.                      
+                                                                                                                                                                
+  Suggested followups:                                                                                                                                          
+  → Fix docs                                                                                                                                                    
+  → Fix tautology                                                                                                                                               
+  → Re-review docs                                                                                                                                              
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The review task is complete. The report is delivered. Nothing else needed. Provide concise final answer confirming verification and limitations.            
+                                                                                                                                                                
+  Review delivered. Summary of verification:                                                                                                                    
+                                                                                                                                                                
+  Checks run                                                                                                                                                    
+  -  bun test  — 335 pass, 0 fail (11 files), exit 0.                                                                                                           
+  -  bun run typecheck  ( tsc --noEmit ) — clean, exit 0.                                                                                                       
+  -  git log --oneline c60158e..HEAD  (5 commits) and  git diff c60158e  inspected;  gh issue view 32  read.                                                    
+  - Read all cited files:  src/head.ts ,  src/channel.ts ,  src/projection.ts ,  src/procedure.ts ,  test/{head,channel,procedure,projection,adapter-           
+  projection}.test.ts ,  README.md ,  CONTEXT.md ,  docs/spec.md ,  docs/verification.md ,  skills/zstate/state.schema.json , plus base blobs via  git show .   
+                                                                                                                                                                
+  Result: FAIL. Prior findings 1 (compaction coverage) and 2 (tag read-back) genuinely closed; prior finding 3 (stale doc claims) not closed. Open findings     
+  with citations:  README.md:5 ,  README.md:27 ,  CONTEXT.md:45 ,  test/projection.test.ts:152 .                                                                
+                                                                                                                                                                
+  Fix round quality — restored compaction cases assert observable return values, and deleting the tag fallback leaves the notice path sound (tag line           
+  written at  src/projection.ts:62 , protected from the cap at  :260 / :291 ).                                                                                  
+                                                                                                                                                                
+  Limitations — I did not run the live omp acceptance session (no harness/ omp  run available); doc-vs-code claims were checked by reading, not by executing    
+  the runtime. The  CONTEXT.md / README.md  findings predate the fix commit but the committed code makes them false.                                           █
+                                                                                                                                                               █
+                                                                                                                                             ⎘ • 6m 49s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Auto top-up                                                                                                                                             Ad │ 
+ │ Don't stall mid-task.                                                                                                                                      │ 
+ │  Top up  freebuff.com                                                                                                                                      │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│
+ │ │     …                │                                                                                                                                   ││
+ │▍AEnter a coding task or / for commands                                                                                                                     ││
+ E                                                                                                                                                            │╰
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: New chat                                                     
+ ← for history · ? for help                                                                                                                                     
