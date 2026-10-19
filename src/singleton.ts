@@ -6,8 +6,9 @@
 // getFreebuffSingleton; tasks, phases and ownership outlive any binding.
 import { basename } from "node:path";
 import { nextTaskId } from "./archive";
-import { LockBusyError } from "./lock";
+import { LockBusyError, readLock, releaseLock } from "./lock";
 import {
+  ABANDONED,
   TurnRunner,
   type TurnOutcome,
   type TurnPhase,
@@ -157,6 +158,10 @@ const GONE_BINDING: OwnerBinding = {
   push: () => {},
 };
 
+// The structured rejection teardown answers with (#23): submit refusals after
+// the last session ended, and the ack of a Task still mid-submit.
+const TORN_DOWN = { code: "torn_down", message: "freebuff is torn down: the last session ended" } as const;
+
 const REAL_TICK: PaintTick = {
   now: Date.now,
   setInterval: (fn: () => void, ms: number): unknown => {
@@ -178,6 +183,8 @@ export class FreebuffSingleton {
   private activeTaskId: string | null = null;
   private runner: TurnRunner | null = null;
   private tickId: unknown;
+  // Set once by teardown (#23): the process's last session ended.
+  private tornDown = false;
 
   constructor(deps: FreebuffSingletonDeps) {
     this.runnerOptions = deps.runner;
@@ -192,6 +199,7 @@ export class FreebuffSingleton {
   // on the caller's clock before any virtual time can pass. The active path
   // hands back the ack promise; it settles when onPhase("working") fires.
   submit(input: SubmitInput): Promise<SubmitOk> {
+    if (this.tornDown) return Promise.reject(TORN_DOWN);
     try {
       return this.submitLocked(input);
     } catch (error) {
@@ -340,6 +348,12 @@ export class FreebuffSingleton {
   }
 
   private onRunError(task: TaskRecord, error: unknown): void {
+    if (error === ABANDONED) {
+      // Teardown (#23) owns this settle: the kill, the tombstone, the archive
+      // and the Lock release already happened. Nothing is pushed, drained or
+      // archived again; the registry is already cleared.
+      return;
+    }
     if (error instanceof LockBusyError) {
       // Cross-owner contention is a caller mistake, not a Task verdict: the
       // run never started, so there is no settle and nothing to push — the
@@ -509,6 +523,45 @@ export class FreebuffSingleton {
     }
   }
 
+  // The last session of the process is gone (#23, ADR-0003): kill the
+  // Instance, tombstone and archive the active Task, drop the queued ones
+  // unarchived (nothing was ever submitted), then release the Lock and clear
+  // the internals. The order is observable; the kill lands before the
+  // tombstone, the tombstone before the Lock delete; so a death in between
+  // leaves a reclaimable record, not an undrivable orphan. Idempotent, and
+  // every step is contained so the release and the dispose always run.
+  async teardown(): Promise<void> {
+    if (this.tornDown) return;
+    this.tornDown = true;
+    for (const id of this.queue) {
+      const task = this.tasks.get(id);
+      if (task !== undefined) task.ack.reject(TORN_DOWN);
+      this.tasks.delete(id);
+    }
+    this.queue = [];
+    const active = this.active();
+    if (active !== undefined && active.ackedAt === undefined) active.ack.reject(TORN_DOWN);
+    try {
+      await this.runner?.abandonActive();
+    } catch {
+      // The kill and the tombstone are best-effort; the release still follows.
+    }
+    try {
+      // An idle Instance (no run in flight) dies here; after an abandon this
+      // is a no-op, because abandonActive already dropped the driver.
+      await this.runner?.dispose();
+    } catch {
+      // Same containment: the release must not depend on the kill.
+    }
+    // Residual safety: the run's unwind releases the turn-scoped Lock in its
+    // own finally. Delete only the record this process holds: while our claim
+    // is parked behind a foreign window's or Keeper's live record, the force
+    // release would delete THEIR record out from under it.
+    const record = readLock(this.runnerOptions.pluginDir);
+    if (record?.ownerPid === process.pid) releaseLock(this.runnerOptions.pluginDir);
+    this.dispose();
+  }
+
   // -- internals ---------------------------------------------------------------
 
   private gate(binding: OwnerBinding): void {
@@ -589,8 +642,10 @@ export class FreebuffSingleton {
     return this.tick.now();
   }
 
-  // Drops the timer, the registry and the queue. Module-private by convention:
-  // resetFreebuffForTests calls it, and #26's last-session teardown will too.
+  // Clears memory only: the timer, the registry, the queue, the runner. The
+  // Instance kill and the Lock release belong to teardown() (#23);
+  // resetFreebuffForTests calls this directly because tests manage their own
+  // child processes.
   dispose(): void {
     this.stopTick();
     this.tasks.clear();
@@ -607,6 +662,12 @@ let instance: FreebuffSingleton | null = null;
 // re-initialises (ADR-0004).
 export function getFreebuffSingleton(deps: () => FreebuffSingletonDeps): FreebuffSingleton {
   return (instance ??= new FreebuffSingleton(deps()));
+}
+
+// The memo when one exists, never creating: a shutdown-path caller must not
+// materialize a singleton just to tear it down.
+export function peekFreebuffSingleton(): FreebuffSingleton | undefined {
+  return instance ?? undefined;
 }
 
 // Drops the memoized instance, the registry, the queue and the paint timer.

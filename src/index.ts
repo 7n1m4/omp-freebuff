@@ -8,7 +8,7 @@
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { defaultFreebuffConfigDir, freebuffStatus, type StatusResult } from "./status";
 import type { FreebuffSingleton, OwnerBinding, ProgressDetails, SettlePush, SubmitOk } from "./singleton";
-import { getFreebuffSingleton } from "./singleton";
+import { getFreebuffSingleton, peekFreebuffSingleton } from "./singleton";
 import type { TurnRunnerOptions } from "./turnRunner";
 import { defaultPluginDir, workspaceDir } from "./workspace";
 
@@ -47,6 +47,12 @@ const runnerOptions = (): TurnRunnerOptions => {
 // tasks, queue and Instance; a binding is only the paint/push pair of the
 // session that submitted them.
 const bindings = new Map<string, OwnerBinding>();
+
+// The process's live sessions (#23, ADR-0004): teardown triggers when this
+// drains, never on the bindings map. A subagent can hold the only binding
+// while a session that never called a tool is still alive, and Set.add
+// dedupes the session_start a re-emitted start fires again.
+const liveSessions = new Set<string>();
 
 const labelOf = (ctx: ExtensionContext): string => {
   if (ctx.agent.kind === "main") return "main";
@@ -137,6 +143,7 @@ const statusText = (status: StatusResult & { queue: { depth: number }; activeTas
     `queue ${status.queue.depth}`,
     status.activeTask === null ? "no active task" : `active ${status.activeTask.taskId} (${status.activeTask.phase})`,
     `archive ${status.archive.count} ${status.archive.count === 1 ? "task" : "tasks"}`,
+    ...(status.abandoned.length > 0 ? [`abandoned ${status.abandoned.length}`] : []),
   ];
   return parts.join("; ");
 };
@@ -150,10 +157,14 @@ interface ScreenDetails {
 const singletonOf = (): FreebuffSingleton => getFreebuffSingleton(() => ({ runner: runnerOptions() }));
 
 export default async function freebuff(pi: ExtensionAPI): Promise<void> {
-  pi.on("session_start", () => pi.appendEntry("pi-freebuff", { event: "session_start" }));
+  pi.on("session_start", (_event, ctx) => {
+    liveSessions.add(ctx.sessionManager.getSessionId());
+    pi.appendEntry("pi-freebuff", { event: "session_start" });
+  });
   pi.on("session_shutdown", (_event, ctx) => {
     pi.appendEntry("pi-freebuff", { event: "session_shutdown" });
     const sessionId = ctx.sessionManager.getSessionId();
+    liveSessions.delete(sessionId);
     bindings.delete(sessionId);
     // The singleton keeps every task it owns; only this binding's paint/push
     // go silent. A config that never parsed has nothing to clean.
@@ -161,6 +172,17 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
       singletonOf().bindingGone(sessionId);
     } catch {
       // No workable config: no binding was ever registered.
+    }
+    // The last live session of the process is gone (#23): kill the Instance
+    // before deleting the Lock (ADR-0003). Fire-and-forget: the host's
+    // shutdown must not wait on the PTY, and teardown contains each of its
+    // own steps. peek never creates: a process whose sessions never used a
+    // tool has nothing to tear down. The torn_down latch on the captured
+    // singleton holds until the process scope resets, so a session rebinding
+    // into this process still finds the gate; that is reachable only after
+    // every session left, never while one lives.
+    if (liveSessions.size === 0) {
+      void peekFreebuffSingleton()?.teardown().catch(() => {});
     }
   });
 

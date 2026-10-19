@@ -17,8 +17,9 @@ import { LockBusyError, writeLock } from "../src/lock";
 import { FreebuffDriverError } from "../src/driver";
 import { COUNTDOWN_REGEX, END_SESSION } from "../src/protocol/markers";
 import { classifyScreen } from "../src/protocol/screen";
-import { TurnRunner, type TurnOutcome, type TurnPhase, type TurnRunnerOptions } from "../src/turnRunner";
+import { ABANDONED, TurnRunner, type TurnOutcome, type TurnPhase, type TurnRunnerOptions } from "../src/turnRunner";
 import { replayFixture } from "./helpers/replay";
+import { pumpUntil, rejectionOf } from "./helpers/guards";
 import { ScriptedDriver, type ScriptedEvent } from "./helpers/scriptedDriver";
 import { VirtualClock } from "./helpers/virtualClock";
 
@@ -888,16 +889,6 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
   describe("cancel (#22)", () => {
     const PARTIAL = "partial step answer";
 
-    // Advances the clock until the predicate holds; timers only fire inside
-    // advance, so a mid-run cancel can be interleaved between the steps.
-    const pumpUntil = async (predicate: () => boolean, budgetMs = 5_000): Promise<void> => {
-      const end = clock.now() + budgetMs;
-      while (!predicate()) {
-        if (clock.now() >= end) throw new Error("virtual time budget exhausted before the cancel could be interleaved");
-        await clock.advance(5);
-      }
-    };
-
     // A run promise with its rejection captured at creation: a mid-advance
     // settle must never surface as an unhandled rejection.
     const runInto = (runner: TurnRunner): Promise<TurnOutcome> => {
@@ -918,7 +909,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
       const phases: TurnPhase[] = [];
       const runner = workingRunner({ onPhase: (phase) => phases.push(phase) });
       const run = runInto(runner);
-      await pumpUntil(() => phases.includes("working"));
+      await pumpUntil(clock, () => phases.includes("working"));
 
       scripted.append({ shouldEndTurn: false, data: { fullResponse: PARTIAL } });
       runner.cancel();
@@ -949,7 +940,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
       const phases: TurnPhase[] = [];
       const runner = workingRunner({ onPhase: (phase) => phases.push(phase) });
       const run = runInto(runner);
-      await pumpUntil(() => phases.includes("working"));
+      await pumpUntil(clock, () => phases.includes("working"));
 
       runner.cancel();
       scripted.isAlive = false;
@@ -964,7 +955,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     test("cancel during submit: cancelled, not ack_missing; the instance is dead", async () => {
       const runner = newRunner();
       const run = runInto(runner);
-      await pumpUntil(() => pastesOf().length >= 1);
+      await pumpUntil(clock, () => pastesOf().length >= 1);
 
       runner.cancel();
       const outcome = await drive(run);
@@ -1046,7 +1037,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
       const phases: TurnPhase[] = [];
       const runner = workingRunner({ onPhase: (phase) => phases.push(phase), watchdog: { deadlineMs: 500 } });
       const run = runInto(runner);
-      await pumpUntil(() => phases.includes("working"));
+      await pumpUntil(clock, () => phases.includes("working"));
 
       runner.cancel();
       const outcome = await drive(run); // the deadline fires mid-wait
@@ -1062,7 +1053,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
       const runner = newRunner(undefined, scripted, { onPhase: (phase) => phases.push(phase) });
       scripted.afterPaste = ackAndEnd;
       const run = runInto(runner);
-      await pumpUntil(() => phases.includes("working"));
+      await pumpUntil(clock, () => phases.includes("working"));
 
       runner.cancel();
       const outcome = await drive(run);
@@ -1076,7 +1067,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
         clock.setTimeout(() => scripted.ack(PROMPT), 60);
       };
       const run = runInto(runner);
-      await pumpUntil(() => phases.includes("working"));
+      await pumpUntil(clock, () => phases.includes("working"));
 
       scripted.endTurn(null); // the turn ends by itself, answerless
       runner.cancel(); // the stop request lands as it ends
@@ -1085,6 +1076,137 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
       if (outcome.ok) throw new Error("expected no_answer");
       expect(outcome.verdict).toBe("no_answer");
       expect(scripted.isAlive).toBe(true); // no_answer keeps the Instance for reuse
+    });
+  });
+
+  describe("abandonActive (#23)", () => {
+    const runInto = (runner: TurnRunner): Promise<TurnOutcome> => {
+      const settled = Promise.withResolvers<TurnOutcome>();
+      void runner.run(PROMPT).then(settled.resolve, settled.reject);
+      return settled.promise;
+    };
+
+    const metaOf = (taskId?: string): { dir: string; meta: Record<string, unknown> } => {
+      const dir = taskId === undefined ? readdirSync(join(pluginDir, "tasks")).map((name) => join(pluginDir, "tasks", name))[0]! : join(pluginDir, "tasks", taskId);
+      return { dir, meta: JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")) as Record<string, unknown> };
+    };
+
+    test("kill and tombstone land while the lock still stands; the unwind releases it", async () => {
+      const runner = newRunner();
+      scripted.afterPaste = () => {}; // the paste lands, the ack never comes
+      const run = runInto(runner);
+      await pumpUntil(clock, () => pastesOf().length >= 1);
+
+      await runner.abandonActive(clock.now());
+      await runner.abandonActive(clock.now()); // idempotent: one kill, one archive
+
+      // The checkpoint the contract pins: the Instance is dead and the archive
+      // written while the Lock the claim took still stands.
+      expect(scripted.isAlive).toBe(false);
+      expect(scripted.calls.kill).toBe(1);
+      const { dir, meta } = metaOf();
+      expect(meta).toMatchObject({ prompt: PROMPT, verdict: null });
+      const phaseLog = meta.phaseLog as string[];
+      expect(phaseLog.at(-1)).toContain("abandoned@");
+      expect(phaseLog.at(-2)).toContain("submitting@");
+      // Meta-only: no answer, chat store, screen or stderr file.
+      expect(readdirSync(dir)).toEqual(["meta.json"]);
+      expect(existsSync(lockPath())).toBe(true);
+
+      // The unwind releases the Lock and writes nothing more.
+      expect(await rejectionOf(clock, run)).toEqual(ABANDONED);
+      expect(existsSync(lockPath())).toBe(false);
+      expect(readdirSync(join(pluginDir, "tasks"))).toHaveLength(1);
+    });
+
+    test("an abandon landing inside cancelActive leaves one abandoned archive: no ack_missing overwrite", async () => {
+      const runner = newRunner();
+      scripted.afterPaste = () => {}; // the paste lands, the ack never comes
+      scripted.cancelActive = async () => {
+        // Reentrant teardown: the abandon fires while the ack-miss path unwinds.
+        await runner.abandonActive(clock.now());
+      };
+      const run = runInto(runner);
+      await pumpUntil(clock, () => pastesOf().length >= 1);
+
+      expect(await rejectionOf(clock, run)).toEqual(ABANDONED);
+      const { dir, meta } = metaOf();
+      expect(meta).toMatchObject({ prompt: PROMPT, verdict: null });
+      const phaseLog = meta.phaseLog as string[];
+      expect(phaseLog.at(-1)).toContain("abandoned@");
+      expect(phaseLog.some((entry) => entry.startsWith("failed@"))).toBe(false);
+      // The ack_missing overwrite would have added the settle's screen, chat
+      // and stderr files next to the meta-only abandoned archive.
+      expect(readdirSync(dir)).toEqual(["meta.json"]);
+      expect(existsSync(lockPath())).toBe(false);
+    });
+
+    test("an abandon landing in the settle's screen read leaves the abandoned archive standing", async () => {
+      const runner = newRunner();
+      scripted.afterPaste = () => {};
+      let cancels = 0;
+      const realCancel = scripted.cancelActive.bind(scripted);
+      scripted.cancelActive = async () => {
+        cancels++;
+        await realCancel();
+      };
+      const realScreen = scripted.screenText.bind(scripted);
+      let readsAfterCancel = 0;
+      scripted.screenText = async () => {
+        const frame = await realScreen();
+        // The second read after the cancel is writeArchive's own screen
+        // capture; teardown lands exactly inside it.
+        if (cancels > 0 && ++readsAfterCancel === 2) await runner.abandonActive(clock.now());
+        return frame;
+      };
+      const run = runInto(runner);
+      await pumpUntil(clock, () => pastesOf().length >= 1);
+
+      const outcome = await drive(run);
+      expect(outcome.ok).toBe(false);
+      // Exactly one archive, the abandoned one: the ack_missing settle wrote nothing.
+      const { dir, meta } = metaOf();
+      expect(meta).toMatchObject({ prompt: PROMPT, verdict: null });
+      expect((meta.phaseLog as string[]).at(-1)).toContain("abandoned@");
+      expect(readdirSync(dir)).toEqual(["meta.json"]);
+      expect(existsSync(lockPath())).toBe(false);
+    });
+
+    test("an abandon during the lock claim archives once and spawns nothing", async () => {
+      writeLock(pluginDir, {
+        ownerPid: 999_999_999,
+        instancePid: null,
+        kind: "keeper",
+        startedAt: new Date(clock.now()).toISOString(),
+      });
+      const runner = newRunner({ isPidAlive: () => true, deadlineMs: 300 });
+      const run = runInto(runner);
+      await runner.abandonActive(clock.now());
+
+      expect(await rejectionOf(clock, run)).toBeInstanceOf(LockBusyError);
+      expect(created).toBe(0);
+      expect(kindsOf()).toEqual([]);
+      const { meta } = metaOf();
+      expect(meta).toMatchObject({ verdict: null });
+      expect(meta.phaseLog).toEqual([expect.stringContaining("abandoned@")]);
+      // The runner never held the Lock, so the foreign record stands untouched:
+      // teardown's residual release owns deleting it.
+      expect(existsSync(lockPath())).toBe(true);
+    });
+
+    test("with no unsettled run abandonActive is a no-op: no archive, no kill", async () => {
+      const runner = newRunner();
+      await runner.abandonActive(clock.now());
+      expect(created).toBe(0);
+      expect(existsSync(join(pluginDir, "tasks"))).toBe(false);
+
+      // A finished run is already settled: the same no-op, instance untouched.
+      scripted.afterPaste = ackAndEnd;
+      await drive(runner.run(PROMPT));
+      await runner.abandonActive(clock.now());
+      expect(scripted.isAlive).toBe(true);
+      expect(scripted.calls.kill).toBe(0);
+      expect(readdirSync(join(pluginDir, "tasks"))).toHaveLength(1);
     });
   });
 });

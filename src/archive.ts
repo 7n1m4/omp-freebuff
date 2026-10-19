@@ -2,7 +2,7 @@
 // success included (ADR-0003). A write only ever creates a fresh directory; an
 // existing archive is never deleted, rewritten or pruned.
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, statSync, writeFileSync, type Dirent } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import type { Verdict } from "./turnRunner";
 
@@ -20,10 +20,11 @@ export interface TaskArchiveInput {
   /** `<phase>@<ISO-8601 UTC>` entries; open list, never validated against the Phase set. */
   phaseLog: string[];
   startedAt: number;
-  answer: string;
-  chatMessages: string;
-  screen: string;
-  stderr: string;
+  /** Absent writes nothing: the abandoned archive (#23) is meta-only. */
+  answer?: string;
+  chatMessages?: string;
+  screen?: string;
+  stderr?: string;
 }
 
 // The stamp is a fixed 18 chars (date 8 + 'T' + time 6 + milliseconds 3, the
@@ -51,11 +52,13 @@ export function writeTaskArchive(input: TaskArchiveInput): { taskId: string; arc
     timings: { startedAt: input.startedAt, settledAt: input.now, elapsedMs: input.now - input.startedAt },
   };
   writeFileSync(join(archivePath, "meta.json"), JSON.stringify(meta, null, 2));
-  writeFileSync(join(archivePath, "answer.md"), input.answer);
-  writeFileSync(join(archivePath, "chat-messages.json"), input.chatMessages);
-  writeFileSync(join(archivePath, "screen.txt"), input.screen);
+  // An absent input writes no file at all (the abandoned archive is meta-only);
+  // a present empty string writes the empty file, as settle always has.
+  if (input.answer !== undefined) writeFileSync(join(archivePath, "answer.md"), input.answer);
+  if (input.chatMessages !== undefined) writeFileSync(join(archivePath, "chat-messages.json"), input.chatMessages);
+  if (input.screen !== undefined) writeFileSync(join(archivePath, "screen.txt"), input.screen);
   // Only when non-empty; never a zero-byte placeholder.
-  if (input.stderr !== "") writeFileSync(join(archivePath, "stderr.log"), input.stderr);
+  if (input.stderr !== undefined && input.stderr !== "") writeFileSync(join(archivePath, "stderr.log"), input.stderr);
   return { taskId, archivePath };
 }
 
@@ -101,4 +104,54 @@ function directorySize(dir: string): number {
       return total;
     }
   }, 0);
+}
+
+// Read-time Abandoned inference (#23): an archive is Abandoned iff its verdict
+// is null and no done@ tombstone landed. The flag is stored nowhere; there is
+// no tenth Verdict; so a hard kill (nothing ran, no tombstone, verdict null)
+// and a graceful teardown report identically. A torn write leaves no readable
+// verdict and is skipped: status must survive it.
+export interface AbandonedTaskReport {
+  taskId: string;
+  prompt: string;
+  target: string;
+  phase: string;
+  diedAt: string;
+}
+
+export function readAbandonedTasks(pluginDir: string): AbandonedTaskReport[] {
+  let names: string[];
+  try {
+    names = readdirSync(join(pluginDir, "tasks"));
+  } catch {
+    return [];
+  }
+  const reports: AbandonedTaskReport[] = [];
+  for (const taskId of names.sort()) {
+    let meta: { prompt?: unknown; target?: unknown; verdict?: unknown; phaseLog?: unknown };
+    try {
+      meta = JSON.parse(readFileSync(join(pluginDir, "tasks", taskId, "meta.json"), "utf8"));
+    } catch {
+      continue;
+    }
+    if (meta.verdict !== null) continue;
+    const phaseLog = Array.isArray(meta.phaseLog)
+      ? meta.phaseLog.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    if (phaseLog.some((entry) => entry.startsWith("done@"))) continue;
+    // The tombstone only marks death; the phase is where the Task last lived.
+    const lastLived = phaseLog.filter((entry) => !entry.startsWith("abandoned@")).at(-1);
+    const at = lastLived === undefined ? -1 : lastLived.indexOf("@");
+    const tombstone = phaseLog.find((entry) => entry.startsWith("abandoned@"));
+    // diedAt: the tombstone's stamp, else the last entry's, else "".
+    const stampEntry = tombstone ?? phaseLog.at(-1);
+    reports.push({
+      taskId,
+      prompt: typeof meta.prompt === "string" ? meta.prompt : "",
+      target: typeof meta.target === "string" ? meta.target : "",
+      phase: lastLived === undefined ? "" : at === -1 ? lastLived : lastLived.slice(0, at),
+      diedAt: stampEntry === undefined ? "" : stampEntry.slice(stampEntry.indexOf("@") + 1),
+    });
+  }
+  return reports;
 }

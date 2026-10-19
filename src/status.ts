@@ -13,7 +13,7 @@ import {
   type LockKind,
   type LockState,
 } from "./lock";
-import { archiveSummary } from "./archive";
+import { archiveSummary, readAbandonedTasks, type AbandonedTaskReport } from "./archive";
 import { readJunctionTarget, workspaceDir } from "./workspace";
 
 export function defaultFreebuffConfigDir(): string {
@@ -70,6 +70,7 @@ export interface StatusResult {
   target?: string;
   foreign: { live: { pid: number; model: string; expiresAt: number }[] };
   archive: { count: number; totalBytes: number; newestId?: string };
+  abandoned: AbandonedTaskReport[];
 }
 
 export function freebuffStatus(
@@ -100,6 +101,7 @@ export function freebuffStatus(
       ownInstancePid: instancePid,
     }),
     archive: archiveSummary(opts.pluginDir),
+    abandoned: readAbandonedTasks(opts.pluginDir),
   };
   if (instancePid !== undefined) status.instancePid = instancePid;
   if (target !== undefined) status.target = target;

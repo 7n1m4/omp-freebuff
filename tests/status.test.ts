@@ -99,6 +99,7 @@ describe("freebuffStatus", () => {
       lock: { state: "free" },
       foreign: { live: [] },
       archive: { count: 0, totalBytes: 0 },
+      abandoned: [],
     });
   });
 
@@ -195,6 +196,27 @@ describe("freebuffStatus", () => {
       newestId: newer.taskId,
     });
     expect(newer.taskId > older.taskId).toBe(true);
+  });
+
+  test("carries the abandoned report for meta-only archives (#23)", () => {
+    const tomb = "2023-11-14T22:13:20.500Z";
+    const { taskId } = writeTaskArchive({
+      pluginDir,
+      now: NOW,
+      prompt: "abandoned prompt",
+      target: "C:\\work\\demo-app",
+      model: "m",
+      instancePid: 4242,
+      verdict: null,
+      phaseLog: ["submitting@2023-11-14T22:13:15.100Z", "working@2023-11-14T22:13:16.000Z", `abandoned@${tomb}`],
+      startedAt: NOW - 6000,
+    });
+
+    const status = freebuffStatus({ pluginDir, freebuffConfigDir: configDir, ...deps() });
+
+    expect(status.abandoned).toEqual([
+      { taskId, prompt: "abandoned prompt", target: "C:\\work\\demo-app", phase: "working", diedAt: tomb },
+    ]);
   });
 
   test("kills nothing: held-by-other plus foreign live holders, zero killPid calls (AC #7)", () => {

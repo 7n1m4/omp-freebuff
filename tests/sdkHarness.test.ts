@@ -54,7 +54,27 @@ describe("sdkHarness", () => {
   );
 
   test(
-    "session_shutdown fires on dispose",
+    "session_start fires on create and session_shutdown fires on dispose",
+    async () => {
+      const starts: unknown[] = [];
+      const startFactory = async (pi: ExtensionAPI): Promise<void> => {
+        pi.on("session_start", payload => {
+          starts.push(payload);
+        });
+      };
+
+      const harness = await createHarnessSession({ extensions: [startFactory] });
+      try {
+        expect(starts).toHaveLength(1);
+      } finally {
+        await harness.dispose();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "session_shutdown fires on dispose (the session_start twin)",
     async () => {
       const shutdowns: unknown[] = [];
       const shutdownFactory = async (pi: ExtensionAPI): Promise<void> => {

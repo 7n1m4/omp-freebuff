@@ -49,7 +49,7 @@ let mockRegistered = false;
 // method (sendMessage, appendEntry, ...) would throw
 // ExtensionRuntimeNotInitializedError forever. Wire the actions extensions use
 // onto this session, the way print/TUI mode does.
-const initializeExtensionRunner = (session: AgentSession): void => {
+const initializeExtensionRunner = async (session: AgentSession): Promise<void> => {
   const runner = session.extensionRunner;
   if (runner === undefined) return;
   const actions = {
@@ -84,6 +84,10 @@ const initializeExtensionRunner = (session: AgentSession): void => {
     getSystemPrompt: () => [],
   } as ExtensionContextActions; // ctx action reads the harness never exercises
   runner.initialize(actions, contextActions);
+  // Symmetric with dispose, which fires session_shutdown: a live host emits
+  // session_start right after its extension runner initializes, and
+  // extensions key their per-session setup on it.
+  await runner.emit({ type: "session_start" });
 };
 
 export async function createHarnessSession(options: HarnessOptions = {}): Promise<Harness> {
@@ -120,7 +124,7 @@ export async function createHarnessSession(options: HarnessOptions = {}): Promis
     slashCommands: [],
   });
 
-  initializeExtensionRunner(result.session);
+  await initializeExtensionRunner(result.session);
 
   const dispose = async (): Promise<void> => {
     try {

@@ -196,7 +196,16 @@ export async function claimLock(
             { ownerPid: process.pid, instancePid: null, kind, startedAt: new Date(now()).toISOString() },
             { exclusive: true },
           );
-          return { claimed: true, release: () => releaseLock(pluginDir) };
+          return {
+            claimed: true,
+            // Delete only a record this process still owns: the slot may have
+            // been freed and re-claimed by another Owner while this run sat
+            // parked (teardown frees it before the unwind); that claimer's
+            // fresh record must survive, as in reclaimLock.
+            release: () => {
+              if (readLock(pluginDir)?.ownerPid === process.pid) releaseLock(pluginDir);
+            },
+          };
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
           // Lost the take race: fall through to sleep, re-read, re-classify.

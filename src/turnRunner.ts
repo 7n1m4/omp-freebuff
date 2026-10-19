@@ -40,6 +40,11 @@ export type Verdict =
 /** The runner's own step phases (CONTEXT: Phase); the Verdicts are outcomes, not steps. */
 export type TurnPhase = "submitting" | "working" | "settling";
 
+// The abandon unwind (#23): teardown already killed the Instance, tombstoned
+// and archived the Task, so the run yields nothing; the singleton must not
+// settle, push or archive it again. Identity-compared, never string-matched.
+export const ABANDONED = { code: "abandoned", message: "freebuff torn down mid-task" } as const;
+
 /** The timers the runner lives on; production passes `realClock`, tests a virtual one. */
 export interface Clock {
   now(): number;
@@ -107,6 +112,16 @@ export interface TurnRunnerOptions {
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+// The run-scoped state abandonActive needs after the run has parked: the phase
+// log grows in place, and `abandoned` is the once-guard and the stop flag.
+interface ActiveTurn {
+  prompt: string;
+  startedAt: number;
+  taskId: string | undefined;
+  phases: string[];
+  abandoned: boolean;
+}
+
 /** Watchdog deadline: how long a confirmed-working Turn may run before the verdict is `deadline`. */
 export const DEADLINE_MS = 20 * 60_000;
 /** Watchdog freeze: how long with no chat-store and no screen (freezeKey) change before the verdict is `frozen`. */
@@ -128,6 +143,9 @@ export class TurnRunner {
   // Sticky between runs and cleared when a run begins, so a cancel with no run
   // in flight cannot poison the next one; the checks in runLocked read it.
   private cancelRequested = false;
+  // The one run in flight, from run() entry to its settle; abandonActive (#23)
+  // claims it once and the abandoned flag is the run's stop signal.
+  private activeTurn: ActiveTurn | null = null;
 
   constructor(options: TurnRunnerOptions) {
     this.options = options;
@@ -156,23 +174,66 @@ export class TurnRunner {
   ): Promise<TurnOutcome> {
     // LockBusyError (cross-Owner contention) propagates: a caller mistake, not a Task verdict.
     this.cancelRequested = false;
-    const startedAt = this.clock.now();
-    const taskId = override?.taskId ?? this.options.taskId;
+    const turn: ActiveTurn = {
+      prompt,
+      startedAt: this.clock.now(),
+      taskId: override?.taskId ?? this.options.taskId,
+      phases: [],
+      abandoned: false,
+    };
     const onPhase = override?.onPhase ?? this.options.onPhase;
-    return await withLock(
-      this.options.pluginDir,
-      "extension",
-      {
-        now: () => this.clock.now(),
-        sleep: (ms) => this.sleep(ms),
-        pollMs: this.timings.pollMs,
-        isPidAlive: this.options.lockDeps?.isPidAlive,
-        killPid: this.options.lockDeps?.killPid,
-        hasLiveTask: this.options.lockDeps?.hasLiveTask,
-        deadlineMs: this.options.lockDeps?.deadlineMs,
-      },
-      (lock) => this.runLocked(prompt, lock, startedAt, taskId, onPhase),
-    );
+    this.activeTurn = turn;
+    try {
+      return await withLock(
+        this.options.pluginDir,
+        "extension",
+        {
+          now: () => this.clock.now(),
+          sleep: (ms) => this.sleep(ms),
+          pollMs: this.timings.pollMs,
+          isPidAlive: this.options.lockDeps?.isPidAlive,
+          killPid: this.options.lockDeps?.killPid,
+          hasLiveTask: this.options.lockDeps?.hasLiveTask,
+          deadlineMs: this.options.lockDeps?.deadlineMs,
+        },
+        (lock) => this.runLocked(turn, lock, onPhase),
+      );
+    } finally {
+      this.activeTurn = null;
+    }
+  }
+
+  // Session-death teardown (#23): the last session is gone. Kills the live
+  // Instance before the tombstone, so a death in between leaves a reclaimable
+  // record, not an undrivable orphan (ADR-0003), then writes the abandoned
+  // archive; meta-only, verdict null; Abandoned is inferred at read time.
+  // Returns while the Lock still stands: the run observes `abandoned` at its
+  // next checkpoint and unwinds, releasing the Lock in withLock's finally,
+  // without a second write or a settle. No-op without an unsettled run.
+  async abandonActive(now: number = this.clock.now()): Promise<void> {
+    const turn = this.activeTurn;
+    if (turn === null || turn.abandoned) return;
+    turn.abandoned = true;
+    const driver = this.driver;
+    const instancePid = driver !== null && driver.alive() ? driver.pid() : null;
+    this.dropDriver();
+    try {
+      writeTaskArchive({
+        pluginDir: this.options.pluginDir,
+        taskId: turn.taskId,
+        now,
+        prompt: turn.prompt,
+        target: readJunctionTarget(this.options.workspace) ?? null,
+        model: this.modelOf(instancePid),
+        instancePid,
+        verdict: null,
+        phaseLog: [...turn.phases, `abandoned@${new Date(now).toISOString()}`],
+        startedAt: turn.startedAt,
+      });
+    } catch {
+      // Contained: the kill already landed, so the Lock release must still
+      // happen; a lost archive is the price of a clean teardown.
+    }
   }
 
   // Slice 3's freebuff_status/freebuff_screen read the live slot through these,
@@ -188,13 +249,16 @@ export class TurnRunner {
   }
 
   private async runLocked(
-    prompt: string,
+    turn: ActiveTurn,
     lock: { setInstancePid(pid: number): void },
-    startedAt: number,
-    taskId: string | undefined,
     onPhase: ((phase: TurnPhase) => void) | undefined,
   ): Promise<TurnOutcome> {
-    const phases: string[] = [];
+    // Teardown (#23) landed before the claim: the archive exists, so the run
+    // unwinds silent; no spawn, no second write. Same guard at every later
+    // settle path below.
+    if (turn.abandoned) throw ABANDONED;
+    const { prompt, startedAt, taskId } = turn;
+    const phases = turn.phases;
     // Run-scoped error warnings (#21): the watcher appends here, the outcome
     // carries the accumulation on settle. Per-run by construction, so a later
     // run on the same runner starts with a clean slate and a fresh baseline.
@@ -219,6 +283,8 @@ export class TurnRunner {
         this.dropDriver();
         return outcome;
       }
+      // An abandon that landed during the claim: nothing spawns, nothing writes.
+      if (turn.abandoned) throw ABANDONED;
       // 1. Instance: reuse the live one, else spawn. The record names the pid
       // only once the child exists (ADR-0001: it goes down null before that).
       let driver = this.driver;
@@ -239,6 +305,8 @@ export class TurnRunner {
       // 2. Settle: idle names a fresh instance, ready a reused one.
       const settled = await driver.waitSettled({});
       if (!settled.ok) {
+        // The abandon outranks the settle failure: teardown already wrote.
+        if (turn.abandoned) throw ABANDONED;
         const excerpt = settled.excerpt;
         let outcome: TurnOutcome;
         if (this.cancelRequested) {
@@ -274,6 +342,7 @@ export class TurnRunner {
         acked = await this.ackWindow(driver, baseline, prompt, draft);
       }
       if (!acked) {
+        if (turn.abandoned) throw ABANDONED;
         // The stop landed mid-submit: the run was cancelled, not unacked.
         if (this.cancelRequested) {
           const outcome = this.cancelledOutcome(baseline);
@@ -282,11 +351,17 @@ export class TurnRunner {
           return outcome;
         }
         await driver.cancelActive();
+        // Abandon checkpoints (#23): an abandon landing inside cancelActive or
+        // the excerpt read has already archived this turn as abandoned; the
+        // ack_missing settle must not overwrite that archive.
+        if (turn.abandoned) throw ABANDONED;
+        const screenExcerpt = await this.excerptOf(driver);
+        if (turn.abandoned) throw ABANDONED;
         const outcome: TurnOutcome = {
           ok: false,
           verdict: "ack_missing",
           message: "no ack within two windows; the submit was cancelled",
-          screenExcerpt: await this.excerptOf(driver),
+          screenExcerpt,
         };
         await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
         this.dropDriver();
@@ -315,6 +390,9 @@ export class TurnRunner {
         // Stopping before the warnings attach lets the final scan catch lines
         // printed just before the turn ended; the second stop below is a no-op.
         await watchdog.stop();
+        // The abandon outranks whatever the race produced: the kill it caused
+        // typically reads as crashed, and teardown already archived the Task.
+        if (turn.abandoned) throw ABANDONED;
         if (warnings.length > 0) outcome.warnings = warnings;
         await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
         // Kill and yield on every fatal verdict; no_answer keeps the Instance for reuse.
@@ -327,6 +405,9 @@ export class TurnRunner {
       // No errors cross this seam: a mid-submit death is a crash, everything
       // else a driver error. The instance is never respawned inside a run.
       // A stop that killed the Instance mid-submit reads as cancelled instead.
+      // The abandon unwind is the one rejection that does cross: it carries
+      // ABANDONED out so the singleton leaves the Task to teardown.
+      if (turn.abandoned) throw ABANDONED;
       if (this.cancelRequested) {
         const outcome = this.cancelledOutcome(baseline);
         if (warnings.length > 0) outcome.warnings = warnings;
@@ -552,6 +633,10 @@ export class TurnRunner {
       // Same best-effort policy as the chat read above.
     }
     const screen = await this.screenOf(driver);
+    // Abandon checkpoint (#23): an abandon landing inside the screen read has
+    // already archived this turn as abandoned, so the settle's own write must
+    // not overwrite it.
+    if (this.activeTurn?.abandoned) return undefined;
     try {
       const now = this.clock.now();
       const instancePid = driver?.pid() ?? null;
@@ -692,7 +777,7 @@ export class TurnRunner {
     return promise;
   }
 
-  // Kills a live instance (tests, future teardown). Idempotent.
+  // Kills a live instance (tests; the session-death teardown dispose step). Idempotent.
   async dispose(): Promise<void> {
     this.dropDriver();
   }

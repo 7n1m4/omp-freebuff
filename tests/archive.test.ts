@@ -14,7 +14,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { archiveSummary, nextTaskId, writeTaskArchive, type TaskArchiveInput } from "../src/archive";
+import {
+  archiveSummary,
+  nextTaskId,
+  readAbandonedTasks,
+  writeTaskArchive,
+  type TaskArchiveInput,
+} from "../src/archive";
 
 // 2023-11-14T22:13:20.000Z, fixed so stamps are deterministic.
 const NOW = 1_700_000_000_000;
@@ -181,5 +187,108 @@ describe("archiveSummary", () => {
     const summary = archiveSummary(pluginDir);
     expect(summary.count).toBe(1);
     expect(summary.totalBytes).toBe(sizeOnDisk(join(pluginDir, "tasks", summary.newestId!)));
+  });
+});
+
+// Ticket #23: Abandoned is inferred at read time, never stored; an
+// archive is abandoned iff the verdict is null and no done@ tombstone landed.
+describe("readAbandonedTasks", () => {
+  const metaOnly = (overrides: Partial<Omit<TaskArchiveInput, "pluginDir">> = {}): Partial<TaskArchiveInput> => ({
+    verdict: null,
+    answer: undefined,
+    chatMessages: undefined,
+    screen: undefined,
+    stderr: undefined,
+    ...overrides,
+  });
+
+  test("a verdict-null archive with an abandoned@ tombstone is abandoned: phase from the last real entry, diedAt from the tombstone", () => {
+    writeTaskArchive(
+      baseInput(
+        metaOnly({
+          taskId: "task-1",
+          phaseLog: [
+            "submitting@2023-11-14T22:13:15.100Z",
+            "working@2023-11-14T22:13:16.000Z",
+            "abandoned@2023-11-14T22:13:20.500Z",
+          ],
+        }),
+      ),
+    );
+
+    expect(readAbandonedTasks(pluginDir)).toEqual([
+      {
+        taskId: "task-1",
+        prompt: "list three colors",
+        target: "C:\\work\\demo-app",
+        phase: "working",
+        diedAt: "2023-11-14T22:13:20.500Z",
+      },
+    ]);
+  });
+
+  test("a hard-killed archive with no tombstone takes phase and diedAt from the last phase entry", () => {
+    writeTaskArchive(
+      baseInput(
+        metaOnly({
+          taskId: "task-2",
+          phaseLog: ["submitting@2023-11-14T22:13:15.100Z", "working@2023-11-14T22:13:16.000Z"],
+        }),
+      ),
+    );
+
+    expect(readAbandonedTasks(pluginDir)).toEqual([
+      { taskId: "task-2", prompt: "list three colors", target: "C:\\work\\demo-app", phase: "working", diedAt: "2023-11-14T22:13:16.000Z" },
+    ]);
+  });
+
+  test("a settled archive with a done@ tombstone and a null verdict is not abandoned", () => {
+    writeTaskArchive(
+      baseInput(
+        metaOnly({
+          phaseLog: ["submitting@2023-11-14T22:13:15.100Z", "working@2023-11-14T22:13:16.000Z", "done@2023-11-14T22:13:20.000Z"],
+        }),
+      ),
+    );
+
+    expect(readAbandonedTasks(pluginDir)).toEqual([]);
+  });
+
+  test("an archive carrying a verdict is not abandoned, whatever the phase log holds", () => {
+    writeTaskArchive(baseInput({ verdict: "cancelled" }));
+    writeTaskArchive(baseInput({ verdict: "deadline", now: NOW + 1000 }));
+
+    expect(readAbandonedTasks(pluginDir)).toEqual([]);
+  });
+
+  test("a corrupt or missing meta.json is skipped silently", () => {
+    mkdirSync(join(pluginDir, "tasks", "torn"), { recursive: true });
+    writeFileSync(join(pluginDir, "tasks", "torn", "meta.json"), '{ "verdict": ');
+    mkdirSync(join(pluginDir, "tasks", "bare"), { recursive: true });
+    const good = writeTaskArchive(baseInput(metaOnly({ taskId: "task-3" })));
+
+    const reports = readAbandonedTasks(pluginDir);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.taskId).toBe(good.taskId);
+  });
+
+  test("reports sort by taskId ascending", () => {
+    writeTaskArchive(baseInput(metaOnly({ taskId: "task-b" })));
+    writeTaskArchive(baseInput(metaOnly({ taskId: "task-a" })));
+
+    expect(readAbandonedTasks(pluginDir).map((report) => report.taskId)).toEqual(["task-a", "task-b"]);
+  });
+
+  test("missing prompt and target read back as empty strings", () => {
+    mkdirSync(join(pluginDir, "tasks", "hand-made"), { recursive: true });
+    writeFileSync(join(pluginDir, "tasks", "hand-made", "meta.json"), JSON.stringify({ verdict: null, phaseLog: ["working@2023-11-14T22:13:16.000Z"] }));
+
+    expect(readAbandonedTasks(pluginDir)).toEqual([
+      { taskId: "hand-made", prompt: "", target: "", phase: "working", diedAt: "2023-11-14T22:13:16.000Z" },
+    ]);
+  });
+
+  test("no tasks directory yields an empty report", () => {
+    expect(readAbandonedTasks(pluginDir)).toEqual([]);
   });
 });

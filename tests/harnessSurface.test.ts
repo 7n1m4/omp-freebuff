@@ -74,6 +74,7 @@ interface StatusDetails {
   target?: string;
   foreign: { live: unknown[] };
   archive: { count: number };
+  abandoned: { taskId: string; prompt: string; target: string; phase: string; diedAt: string }[];
   queue: { depth: number; taskIds: string[] };
   activeTask: { taskId: string; phase: string } | null;
 }
@@ -155,9 +156,9 @@ afterEach(async () => {
 // execute; the stub child is the repo's own runtime with mode knobs in env.
 const openRig = (
   mode: string,
-  opts: { endDelayMs?: number; ackMs?: number; watchdog?: { deadlineMs?: number; freezeMs?: number } } = {},
+  opts: { endDelayMs?: number; ackMs?: number; watchdog?: { deadlineMs?: number; freezeMs?: number }; inputLogName?: string } = {},
 ): void => {
-  rig.inputLog = join(rig.pluginDir, "stub-input.jsonl");
+  rig.inputLog = join(rig.pluginDir, opts.inputLogName ?? "stub-input.jsonl");
   const env: Record<string, string> = {
     FREEBUFF_STUB_MODE: mode,
     FREEBUFF_STUB_INPUT_LOG: rig.inputLog,
@@ -501,12 +502,15 @@ describe("freebuff tool surface over the singleton (harness tier)", () => {
       });
       const bystander = await createHarnessSession({
         extensions: [freebuff],
-        responses: [...statusCall(), ...statusCall(), ...SPARES],
+        responses: [...progressCall(), ...statusCall(), ...statusCall(), ...SPARES],
       });
       let reloaded: Harness | null = null;
       try {
         expect(await owner.session.prompt("run it")).toBe(true);
         const taskId = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+        // A bystander tool call registers the second session's binding, so the
+        // dispose below is not the last session's: the task runs on (#23).
+        expect(await bystander.session.prompt("progress")).toBe(true);
         await owner.dispose();
 
         expect(await bystander.session.prompt("status")).toBe(true);
@@ -776,11 +780,15 @@ describe("freebuff tool surface over the singleton (harness tier)", () => {
       });
       const bystander = await createHarnessSession({
         extensions: [freebuff],
-        responses: [...statusCall(), ...SPARES],
+        responses: [...progressCall(), ...statusCall(), ...SPARES],
       });
       try {
         expect(await owner.session.prompt("run it")).toBe(true);
         const taskId = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+        // A bystander tool call registers the second session's binding, so the
+        // dispose below is not the last session's: the task keeps its watchdog
+        // instead of being abandoned (#23).
+        expect(await bystander.session.prompt("progress")).toBe(true);
         // dispose delivers session_shutdown: the singleton keeps the task, the
         // binding's paint/push go silent, and the deadline still settles it.
         await owner.dispose();
@@ -870,11 +878,15 @@ describe("freebuff tool surface over the singleton (harness tier)", () => {
       });
       const bystander = await createHarnessSession({
         extensions: [freebuff],
-        responses: [...statusCall(), ...statusCall(), ...SPARES],
+        responses: [...progressCall(), ...statusCall(), ...SPARES],
       });
       try {
         expect(await owner.session.prompt("run it")).toBe(true);
         const taskId = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+        // A bystander tool call registers the second session's binding, so the
+        // dispose below is not the last session's: the Detached Task keeps its
+        // Watchdog and Lock instead of being abandoned (#23).
+        expect(await bystander.session.prompt("progress")).toBe(true);
         // dispose delivers session_shutdown: the Detached Task keeps its
         // Watchdog and Lock, and the settle push into the gone binding is a
         // silent no-op.
@@ -897,6 +909,208 @@ describe("freebuff tool surface over the singleton (harness tier)", () => {
         expect((status.details as StatusDetails).lock.state).toBe("free");
       } finally {
         await bystander.dispose();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "ending the last session abandons the in-flight task: verdict null with an abandoned tombstone, stub killed, lock free",
+    async () => {
+      openRig("happy", { endDelayMs: 5_000 });
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...runCall(PROMPT), ...SPARES],
+      });
+      let disposed = false;
+      try {
+        expect(await owner.session.prompt("run it")).toBe(true);
+        const run = lastToolResult(owner, "freebuff_run");
+        expect(run.isError).toBe(false);
+        const taskId = (run.details as SubmitOk).taskId;
+        expect((run.details as SubmitOk).phase).toBe("working");
+
+        // dispose delivers session_shutdown for the only session: the process
+        // tears down (#23): kill, tombstone, meta-only archive, Lock release.
+        await owner.dispose();
+        disposed = true;
+
+        await waitFor(() => existsSync(join(rig.pluginDir, "tasks", taskId)));
+        const meta = JSON.parse(readFileSync(join(rig.pluginDir, "tasks", taskId, "meta.json"), "utf8")) as {
+          verdict: string | null;
+          phaseLog: string[];
+          prompt: string;
+        };
+        expect(meta.verdict).toBeNull();
+        expect(meta.prompt).toBe(PROMPT);
+        expect(meta.phaseLog.at(-1)).toContain("abandoned@");
+        // Meta-only: the abandoned archive carries no answer file, and the
+        // kill-before-delete order leaves a free Lock behind a dead stub.
+        expect(existsSync(join(rig.pluginDir, "tasks", taskId, "answer.md"))).toBe(false);
+        expect(existsSync(join(rig.pluginDir, "lock.json"))).toBe(false);
+        await waitFor(() => !pidAlive(spawnPid(rig.inputLog)));
+      } finally {
+        if (!disposed) await owner.dispose();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "a fresh start on an abandoned plugin dir reports the abandoned task, spawns nothing, and a new run settles without resuming it",
+    async () => {
+      openRig("happy", { endDelayMs: 5_000 });
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...runCall(PROMPT), ...SPARES],
+      });
+      const FRESH_PROMPT = "fresh run after abandonment";
+      let disposed = false;
+      try {
+        expect(await owner.session.prompt("run it")).toBe(true);
+        const taskId = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+
+        // Last session gone: the process tears down mid-task (#23).
+        await owner.dispose();
+        disposed = true;
+        await waitFor(() => existsSync(join(rig.pluginDir, "tasks", taskId, "meta.json")));
+        await waitFor(() => !pidAlive(spawnPid(rig.inputLog)));
+        const abandonedPath = join(rig.pluginDir, "tasks", taskId, "meta.json");
+        const abandonedBytes = readFileSync(abandonedPath, "utf8");
+
+        // Rig B: SAME pluginDir, fresh singleton, fresh input log.
+        openRig("happy", { endDelayMs: 1_500, inputLogName: "stub-input-fresh.jsonl" });
+        resetFreebuffForTests();
+        const fresh = await createHarnessSession({
+          extensions: [freebuff],
+          responses: [...statusCall(), ...runCall(FRESH_PROMPT), ...SPARES],
+        });
+        try {
+          expect(await fresh.session.prompt("status")).toBe(true);
+          const status = lastToolResult(fresh, "freebuff_status");
+          expect(status.isError).toBe(false);
+          const details = status.details as StatusDetails;
+          expect(details.activeTask).toBeNull();
+          expect(details.abandoned).toEqual([
+            expect.objectContaining({ taskId, prompt: PROMPT, phase: "working" }),
+          ]);
+          const [report] = details.abandoned;
+          expect(report.diedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+          // The fresh start itself spawned nothing: its own input log has no
+          // spawn event because the file does not exist yet.
+          expect(existsSync(rig.inputLog)).toBe(false);
+
+          expect(await fresh.session.prompt("run it again")).toBe(true);
+          expect((lastToolResult(fresh, "freebuff_run").details as SubmitOk).phase).toBe("working");
+          // Exactly one stub, carrying the NEW prompt only: no resume, no
+          // re-paste of the abandoned prompt.
+          const events = readInputLog(rig.inputLog);
+          expect(eventsOf(events, "spawn")).toHaveLength(1);
+          expect(eventsOf(events, "submit").map((entry) => entry.text)).toEqual([FRESH_PROMPT]);
+
+          await waitFor(() => pushMessages(fresh).length >= 1);
+          const freshTaskId = settlePushOf(pushMessages(fresh)[0]!).taskId;
+          expect(freshTaskId).not.toBe(taskId);
+          const freshMeta = JSON.parse(
+            readFileSync(join(rig.pluginDir, "tasks", freshTaskId, "meta.json"), "utf8"),
+          ) as { prompt: string; verdict: string | null; phaseLog: string[] };
+          expect(freshMeta.prompt).toBe(FRESH_PROMPT);
+          expect(freshMeta.verdict).toBeNull();
+          expect(freshMeta.phaseLog.at(-1)).toContain("done@");
+          expect(readFileSync(join(rig.pluginDir, "tasks", freshTaskId, "answer.md"), "utf8")).toBe(
+            `stub(DeepSeek V4.1 Flash): ${FRESH_PROMPT}`,
+          );
+          // The abandoned archive is untouched by the fresh start's run.
+          expect(readFileSync(abandonedPath, "utf8")).toBe(abandonedBytes);
+        } finally {
+          await fresh.dispose();
+        }
+      } finally {
+        if (!disposed) await owner.dispose();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "a subagent's dispose while another session lives tears nothing down: the task runs to its real answer",
+    async () => {
+      openRig("happy", { endDelayMs: 1_500 });
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...runCall(PROMPT), ...SPARES],
+      });
+      const sub = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...progressCall(), ...SPARES],
+      });
+      try {
+        expect(await owner.session.prompt("run it")).toBe(true);
+        const taskId = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+        // The sub's gated tool call registers its binding; its dispose is then
+        // one session leaving, not the last one (#23): nothing is abandoned.
+        expect(await sub.session.prompt("progress")).toBe(true);
+        expect(lastToolResult(sub, "freebuff_progress").isError).toBe(true);
+
+        await sub.dispose();
+
+        // The task still runs to its real verdict and delivers to the owner.
+        await waitFor(() => existsSync(join(rig.pluginDir, "tasks", taskId)));
+        const meta = JSON.parse(readFileSync(join(rig.pluginDir, "tasks", taskId, "meta.json"), "utf8")) as {
+          verdict: string | null;
+          phaseLog: string[];
+        };
+        expect(meta.verdict).toBeNull();
+        expect(meta.phaseLog.at(-1)).toContain("done@");
+        expect(readFileSync(join(rig.pluginDir, "tasks", taskId, "answer.md"), "utf8")).toBe(ANSWER);
+        await waitFor(() => pushMessages(owner).length >= 1);
+        expect(settlePushOf(pushMessages(owner)[0]!)).toMatchObject({ taskId, ok: true, answer: ANSWER });
+      } finally {
+        await owner.dispose();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "the first tool call belonging to a session that then disposes leaves a living session untouched",
+    async () => {
+      openRig("happy", { endDelayMs: 1_500 });
+      // The owner registers no binding of its own until after the sub is gone:
+      // only the live-session count (#23, ADR-0004) can keep the process up,
+      // so the old bindings-based trigger tore the singleton down here.
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...statusCall(), ...runCall(PROMPT), ...SPARES],
+      });
+      const sub = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...statusCall(), ...SPARES],
+      });
+      try {
+        // The sub holds the process's only OwnerBinding when it leaves.
+        expect(await sub.session.prompt("status")).toBe(true);
+        expect(lastToolResult(sub, "freebuff_status").isError).toBe(false);
+
+        await sub.dispose();
+
+        // The owner never left: its first tool call must not meet a torn-down
+        // singleton, and a task it submits afterwards runs to its answer.
+        expect(await owner.session.prompt("status")).toBe(true);
+        expect(lastToolResult(owner, "freebuff_status").isError).toBe(false);
+
+        expect(await owner.session.prompt("run it")).toBe(true);
+        const run = lastToolResult(owner, "freebuff_run");
+        expect(run.isError).toBe(false);
+        expect((run.details as SubmitOk).phase).toBe("working");
+        await waitFor(() => existsSync(join(rig.pluginDir, "tasks", (run.details as SubmitOk).taskId)));
+        const meta = JSON.parse(
+          readFileSync(join(rig.pluginDir, "tasks", (run.details as SubmitOk).taskId, "meta.json"), "utf8"),
+        ) as { verdict: string | null; phaseLog: string[] };
+        expect(meta.verdict).toBeNull();
+        expect(meta.phaseLog.at(-1)).toContain("done@");
+      } finally {
+        await owner.dispose();
       }
     },
     60_000,
