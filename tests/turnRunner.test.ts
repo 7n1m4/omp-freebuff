@@ -17,7 +17,7 @@ import { LockBusyError, writeLock } from "../src/lock";
 import { FreebuffDriverError } from "../src/driver";
 import { COUNTDOWN_REGEX, END_SESSION } from "../src/protocol/markers";
 import { classifyScreen } from "../src/protocol/screen";
-import { TurnRunner, type TurnPhase, type TurnRunnerOptions } from "../src/turnRunner";
+import { TurnRunner, type TurnOutcome, type TurnPhase, type TurnRunnerOptions } from "../src/turnRunner";
 import { replayFixture } from "./helpers/replay";
 import { ScriptedDriver, type ScriptedEvent } from "./helpers/scriptedDriver";
 import { VirtualClock } from "./helpers/virtualClock";
@@ -62,7 +62,7 @@ const lockPath = () => join(pluginDir, "lock.json");
 const newRunner = (
   lockDeps?: { isPidAlive?: (pid: number) => boolean; deadlineMs?: number },
   driver: ScriptedDriver = scripted,
-  extra?: Pick<TurnRunnerOptions, "taskId" | "onPhase" | "watchdog">,
+  extra?: Pick<TurnRunnerOptions, "taskId" | "onPhase" | "watchdog" | "createDriver">,
 ): TurnRunner =>
   new TurnRunner({
     pluginDir,
@@ -882,6 +882,209 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
       const outcome = await drive(runner.run(PROMPT));
       if (!outcome.ok) throw new Error("expected success");
       expect(outcome.warnings).toEqual([ERROR_LINE]);
+    });
+  });
+
+  describe("cancel (#22)", () => {
+    const PARTIAL = "partial step answer";
+
+    // Advances the clock until the predicate holds; timers only fire inside
+    // advance, so a mid-run cancel can be interleaved between the steps.
+    const pumpUntil = async (predicate: () => boolean, budgetMs = 5_000): Promise<void> => {
+      const end = clock.now() + budgetMs;
+      while (!predicate()) {
+        if (clock.now() >= end) throw new Error("virtual time budget exhausted before the cancel could be interleaved");
+        await clock.advance(5);
+      }
+    };
+
+    // A run promise with its rejection captured at creation: a mid-advance
+    // settle must never surface as an unhandled rejection.
+    const runInto = (runner: TurnRunner): Promise<TurnOutcome> => {
+      const settled = Promise.withResolvers<TurnOutcome>();
+      void runner.run(PROMPT).then(settled.resolve, settled.reject);
+      return settled.promise;
+    };
+
+    const workingRunner = (extra?: Pick<TurnRunnerOptions, "onPhase" | "watchdog">): TurnRunner => {
+      const runner = newRunner(undefined, scripted, extra);
+      scripted.afterPaste = () => {
+        clock.setTimeout(() => scripted.ack(PROMPT), 60);
+      };
+      return runner;
+    };
+
+    test("cancel during working: cancelled with the partial answer, instance dropped, lock released, fresh next instance", async () => {
+      const phases: TurnPhase[] = [];
+      const runner = workingRunner({ onPhase: (phase) => phases.push(phase) });
+      const run = runInto(runner);
+      await pumpUntil(() => phases.includes("working"));
+
+      scripted.append({ shouldEndTurn: false, data: { fullResponse: PARTIAL } });
+      runner.cancel();
+      runner.cancel(); // idempotent: the second request must not re-escalate
+      scripted.isAlive = false; // the ladder's kill lands
+      const outcome = await drive(run);
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("expected cancelled");
+      expect(outcome.verdict).toBe("cancelled");
+      expect(outcome.message).toBe("task cancelled");
+      expect(outcome.partialAnswer).toBe(PARTIAL);
+      const archivePath = outcome.archivePath!;
+      expect(JSON.parse(readFileSync(join(archivePath, "meta.json"), "utf8"))).toMatchObject({ verdict: "cancelled" });
+      expect(readFileSync(join(archivePath, "answer.md"), "utf8")).toBe(PARTIAL);
+      expect(scripted.calls.cancelActive).toBe(1);
+      expect(scripted.calls.kill).toBe(1);
+      expect(scripted.isAlive).toBe(false);
+      expect(existsSync(lockPath())).toBe(false);
+
+      // The next Task claims the released Lock and spawns a fresh Instance.
+      scripted.isAlive = true;
+      scripted.afterPaste = ackAndEnd;
+      expect((await drive(runner.run(PROMPT))).ok).toBe(true);
+      expect(created).toBe(2);
+    });
+
+    test("cancel with no partial answer archives an empty answer", async () => {
+      const phases: TurnPhase[] = [];
+      const runner = workingRunner({ onPhase: (phase) => phases.push(phase) });
+      const run = runInto(runner);
+      await pumpUntil(() => phases.includes("working"));
+
+      runner.cancel();
+      scripted.isAlive = false;
+      const outcome = await drive(run);
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("expected cancelled");
+      expect(outcome.verdict).toBe("cancelled");
+      expect(outcome.partialAnswer).toBeUndefined();
+      expect(readFileSync(join(outcome.archivePath!, "answer.md"), "utf8")).toBe("");
+    });
+
+    test("cancel during submit: cancelled, not ack_missing; the instance is dead", async () => {
+      const runner = newRunner();
+      const run = runInto(runner);
+      await pumpUntil(() => pastesOf().length >= 1);
+
+      runner.cancel();
+      const outcome = await drive(run);
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("expected cancelled");
+      expect(outcome.verdict).toBe("cancelled");
+      expect(scripted.calls.cancelActive).toBe(1);
+      expect(scripted.isAlive).toBe(false);
+      expect(existsSync(lockPath())).toBe(false);
+    });
+
+    test("a cancel that arrives before the Lock claim spawns nothing", async () => {
+      const runner = newRunner();
+      const run = runner.run(PROMPT);
+      runner.cancel();
+      const outcome = await drive(run);
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("expected cancelled");
+      expect(outcome.verdict).toBe("cancelled");
+      expect(created).toBe(0);
+      expect(kindsOf()).toEqual([]);
+      expect(existsSync(lockPath())).toBe(false);
+    });
+
+    test("a cancel with no run in flight does not poison the next run", async () => {
+      const runner = newRunner();
+      runner.cancel();
+      scripted.afterPaste = ackAndEnd;
+      const outcome = await drive(runner.run(PROMPT));
+      expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
+      expect(created).toBe(1);
+    });
+
+    test("a cancel landing during the spawn escalates against the fresh instance", async () => {
+      const runner = newRunner(undefined, scripted, {
+        createDriver: async () => {
+          await clockSleep(clock)(50); // parks the spawn: the cancel lands inside it
+          created++;
+          scripted.started();
+          return scripted;
+        },
+      });
+      const run = runInto(runner);
+      await clock.advance(25); // parked inside createDriver
+      runner.cancel();
+      await clock.advance(50); // the spawn completes; the re-armed escalation must fire
+      scripted.isAlive = false; // the ladder's kill lands
+      const outcome = await drive(run);
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("expected cancelled");
+      expect(outcome.verdict).toBe("cancelled");
+      expect(scripted.calls.cancelActive).toBe(1); // against the FRESH driver, not skipped
+      expect(scripted.isAlive).toBe(false);
+      expect(existsSync(lockPath())).toBe(false);
+    });
+
+    test("a cancel during the settle wait lands cancelled, not driver_error", async () => {
+      const runner = newRunner(undefined, scripted, {
+        createDriver: async () => {
+          await clockSleep(clock)(50); // parks the spawn: the cancel lands inside it
+          created++;
+          scripted.started();
+          return scripted;
+        },
+      });
+      const run = runInto(runner);
+      await clock.advance(25); // runLocked entered, parked inside createDriver
+      runner.cancel();
+      scripted.settle = { ok: false, reason: "ready_timeout", excerpt: "never settled" };
+      const outcome = await drive(run);
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("expected cancelled");
+      expect(outcome.verdict).toBe("cancelled");
+      expect(created).toBe(1);
+      expect(scripted.isAlive).toBe(false);
+    });
+
+    test("a cancel outranks an armed watchdog", async () => {
+      const phases: TurnPhase[] = [];
+      const runner = workingRunner({ onPhase: (phase) => phases.push(phase), watchdog: { deadlineMs: 500 } });
+      const run = runInto(runner);
+      await pumpUntil(() => phases.includes("working"));
+
+      runner.cancel();
+      const outcome = await drive(run); // the deadline fires mid-wait
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("expected cancelled");
+      expect(outcome.verdict).toBe("cancelled");
+      expect(outcome.message).toBe("task cancelled");
+      expect(scripted.isAlive).toBe(false);
+    });
+
+    test("a natural success that beats the cancel is kept truthful", async () => {
+      const phases: TurnPhase[] = [];
+      const runner = newRunner(undefined, scripted, { onPhase: (phase) => phases.push(phase) });
+      scripted.afterPaste = ackAndEnd;
+      const run = runInto(runner);
+      await pumpUntil(() => phases.includes("working"));
+
+      runner.cancel();
+      const outcome = await drive(run);
+      expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
+    });
+
+    test("a natural no_answer that beats the cancel keeps its verdict and its instance", async () => {
+      const phases: TurnPhase[] = [];
+      const runner = newRunner(undefined, scripted, { onPhase: (phase) => phases.push(phase) });
+      scripted.afterPaste = () => {
+        clock.setTimeout(() => scripted.ack(PROMPT), 60);
+      };
+      const run = runInto(runner);
+      await pumpUntil(() => phases.includes("working"));
+
+      scripted.endTurn(null); // the turn ends by itself, answerless
+      runner.cancel(); // the stop request lands as it ends
+      const outcome = await drive(run);
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("expected no_answer");
+      expect(outcome.verdict).toBe("no_answer");
+      expect(scripted.isAlive).toBe(true); // no_answer keeps the Instance for reuse
     });
   });
 });

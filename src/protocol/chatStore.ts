@@ -128,6 +128,28 @@ function completionAt(lines: JsonLine[], i: number): TurnEndResult {
   return { done: true, answer: null };
 }
 
+// The partial answer of a cancelled Turn: the LAST unfinished-step line
+// (shouldEndTurn:false, top-level or under data) that carries a fullResponse
+// (data else top-level), so the stop keeps the current step's report. Key
+// handling mirrors completionAt; no unfinished step reads as null.
+export function partialAnswer(logText: string): string | null {
+  const lines = logLines(logText);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const json = lines[i].json;
+    if (json === null) continue;
+    const data = typeof json.data === "object" && json.data !== null ? (json.data as Record<string, unknown>) : null;
+    if (json[SHOULD_END_TURN_KEY] !== false && data?.[SHOULD_END_TURN_KEY] !== false) continue;
+    const answer =
+      typeof data?.[FULL_RESPONSE_KEY] === "string"
+        ? data[FULL_RESPONSE_KEY]
+        : typeof json[FULL_RESPONSE_KEY] === "string"
+          ? json[FULL_RESPONSE_KEY]
+          : null;
+    if (answer !== null) return answer;
+  }
+  return null;
+}
+
 function scanDir(snap: ChatDirSnapshot, from: number): TurnEndResult | null {
   const lines = logLines(snap.logText);
   for (let i = 0; i < lines.length; i++) {

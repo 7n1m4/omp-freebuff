@@ -32,7 +32,9 @@
 //   driver.test.ts "displaced"; policy: turnRunner.test.ts settle mapping
 // - driver_error: the test.each settle-frame block (below, the unknown frame);
 //   policy: turnRunner.test.ts settle mapping (needs_login, ready_timeout)
-// - cancelled: owned by the stop ticket #22; never produced by this surface.
+// - cancelled: "freebuff_cancel stops the working task" (below); policy:
+//   singleton.test.ts "cancel and detach (#22)"; PTY: task.test.ts "cancel
+//   ladder over the stub child (#22)"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,6 +97,10 @@ const statusCall = (): MockResponse[] => [
 const screenCall = (): MockResponse[] => [
   { content: [{ type: "toolCall", name: "freebuff_screen", arguments: {} }] },
   { content: ["screened"] },
+];
+const cancelCall = (): MockResponse[] => [
+  { content: [{ type: "toolCall", name: "freebuff_cancel", arguments: {} }] },
+  { content: ["cancelled"] },
 ];
 
 interface Rig {
@@ -795,6 +801,136 @@ describe("freebuff tool surface over the singleton (harness tier)", () => {
         });
       } finally {
         await bystander.dispose();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "freebuff_cancel stops the working task; the queued one drains on a fresh instance",
+    async () => {
+      // A 5 s hold between Ack and end lines: the ladder (~2 s) must beat the
+      // stub's natural completion, and the drained task's own 5 s turn fits
+      // the budget.
+      openRig("happy", { endDelayMs: 5000 });
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...runCall("p1"), ...runCall("p2"), ...cancelCall(), ...SPARES],
+      });
+      try {
+        expect(await owner.session.prompt("run p1")).toBe(true);
+        const first = lastToolResult(owner, "freebuff_run");
+        const t1 = (first.details as SubmitOk).taskId;
+        expect(await owner.session.prompt("run p2")).toBe(true);
+        const t2 = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+        expect((lastToolResult(owner, "freebuff_run").details as SubmitOk).phase).toBe("queued");
+
+        expect(await owner.session.prompt("cancel p1")).toBe(true);
+        const cancel = lastToolResult(owner, "freebuff_cancel");
+        expect(cancel.isError).toBe(false);
+        expect(cancel.details).toEqual({
+          taskId: t1,
+          verdict: "cancelled",
+          archivePath: join(rig.pluginDir, "tasks", t1),
+        });
+        expect(textOf(cancel)).toContain(`freebuff task ${t1} cancelled (verdict cancelled)`);
+        expect(JSON.parse(readFileSync(join(rig.pluginDir, "tasks", t1, "meta.json"), "utf8"))).toMatchObject({
+          verdict: "cancelled",
+        });
+
+        // The aside pushes: the cancelled verdict, then the drained task's answer.
+        await waitFor(() => pushMessages(owner).length >= 2);
+        expect(settlePushOf(pushMessages(owner)[0]!)).toMatchObject({ taskId: t1, ok: false, verdict: "cancelled" });
+        expect(settlePushOf(pushMessages(owner)[1]!)).toMatchObject({
+          taskId: t2,
+          ok: true,
+          answer: `stub(DeepSeek V4.1 Flash): p2`,
+        });
+
+        // The ladder ran to its last rung and the drained task spawned fresh.
+        const events = readInputLog(rig.inputLog);
+        expect(eventsOf(events, "esc")).toHaveLength(1);
+        expect(eventsOf(events, "ctrl-c")).toHaveLength(3);
+        expect(eventsOf(events, "spawn")).toHaveLength(2);
+        await waitFor(() => !owner.session.isStreaming);
+      } finally {
+        await owner.dispose();
+      }
+    },
+    90_000,
+  );
+
+  test(
+    "a disposed owner detaches the working task: it completes with its real answer, silently",
+    async () => {
+      openRig("happy", { endDelayMs: 500 });
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...runCall(PROMPT), ...SPARES],
+      });
+      const bystander = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...statusCall(), ...statusCall(), ...SPARES],
+      });
+      try {
+        expect(await owner.session.prompt("run it")).toBe(true);
+        const taskId = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+        // dispose delivers session_shutdown: the Detached Task keeps its
+        // Watchdog and Lock, and the settle push into the gone binding is a
+        // silent no-op.
+        await owner.dispose();
+
+        await waitFor(() => existsSync(join(rig.pluginDir, "tasks", taskId)));
+        // The REAL verdict, not a cancel: the stub completed its turn.
+        expect(readFileSync(join(rig.pluginDir, "tasks", taskId, "answer.md"), "utf8")).toBe(ANSWER);
+        const meta = JSON.parse(readFileSync(join(rig.pluginDir, "tasks", taskId, "meta.json"), "utf8")) as {
+          verdict: string | null;
+          phaseLog: string[];
+        };
+        expect(meta.verdict).toBeNull();
+        expect(meta.phaseLog.at(-1)).toContain("done@");
+
+        expect(await bystander.session.prompt("status")).toBe(true);
+        const status = lastToolResult(bystander, "freebuff_status");
+        expect(status.isError).toBe(false);
+        expect((status.details as StatusDetails).activeTask).toBeNull();
+        expect((status.details as StatusDetails).lock.state).toBe("free");
+      } finally {
+        await bystander.dispose();
+      }
+    },
+    60_000,
+  );
+
+  test(
+    "a cancel while the run call is parked before the Ack errors the parked call and kills the instance",
+    async () => {
+      openRig("no-ack");
+      const owner = await createHarnessSession({
+        extensions: [freebuff],
+        responses: [...runCall(PROMPT), ...SPARES],
+      });
+      const binding = directBinding(owner);
+      try {
+        const first = owner.session.prompt("run it");
+        await waitFor(() => existsSync(rig.inputLog) && kindsOf(readInputLog(rig.inputLog)).includes("submit"));
+
+        // The same public seam the tool uses: the session is mid-turn, so the
+        // cancel cannot ride a prompt of its own.
+        expect(await singleton().cancel(binding)).toMatchObject({ verdict: "cancelled" });
+        expect(await first).toBe(true);
+        const run = lastToolResult(owner, "freebuff_run");
+        expect(run.isError).toBe(true);
+        expect(run.details).toMatchObject({ code: "submit_failed", verdict: "cancelled" });
+
+        // The ladder ran to the forced kill: the stub is gone.
+        const events = readInputLog(rig.inputLog);
+        expect(eventsOf(events, "esc")).toHaveLength(1);
+        expect(eventsOf(events, "ctrl-c")).toHaveLength(3);
+        await waitFor(() => !pidAlive(spawnPid(rig.inputLog)));
+        expect(existsSync(join(rig.pluginDir, "lock.json"))).toBe(false);
+      } finally {
+        await owner.dispose();
       }
     },
     60_000,

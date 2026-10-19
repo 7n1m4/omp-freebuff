@@ -356,17 +356,27 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
     });
     expect(syncErr(() => progressOf(undefined, other))).toMatchObject({ code: "not_owner" });
     expect(await rejectionOf(sing().screenText(other))).toMatchObject({ code: "not_owner" });
-    expect(syncErr(() => sing().cancel(other))).toMatchObject({ code: "not_owner" });
+    expect(await rejectionOf(sing().cancel(other))).toEqual({
+      code: "not_owner",
+      message: expect.stringContaining("Owner Session"),
+    });
 
-    expect(syncErr(() => sing().cancel(owner))).toMatchObject({ code: "cancel_not_implemented" });
+    // The owner's cancel settles the task cancelled through the same funnel as
+    // any settle: archive, push, drained slot, released Lock.
+    const cancelled = sing().cancel(owner);
+    drivers[0].isAlive = false; // the ladder's kill lands
+    expect(await driveGuard(guard(cancelled))).toEqual({
+      taskId: first.taskId,
+      verdict: "cancelled",
+      archivePath: join(pluginDir, "tasks", first.taskId),
+    });
+    expect(pushes[0]).toMatchObject({ taskId: first.taskId, ok: false, verdict: "cancelled" });
 
-    drivers[0].endTurn(ANSWER);
-    await pumpUntil(() => sing().statusExtra().activeTask === null);
-    expect(syncErr(() => sing().cancel(owner))).toMatchObject({ code: "no_active_task" });
+    expect(await rejectionOf(sing().cancel(owner))).toMatchObject({ code: "no_active_task" });
 
     // A settled task is still its owner's answer: a third session is refused.
     expect(syncErr(() => progressOf(first.taskId, third))).toMatchObject({ code: "not_owner" });
-    expect(progressOf(first.taskId, owner)).toMatchObject({ phase: "done", answer: ANSWER });
+    expect(progressOf(first.taskId, owner)).toMatchObject({ phase: "failed", verdict: "cancelled" });
   });
 
   test("an unsafe target is a caller mistake: bad_target at submit, nothing registered", async () => {
@@ -477,6 +487,23 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
     expect(existsSync(join(pluginDir, "tasks"))).toBe(false);
     expect(progressOf(undefined)).toMatchObject({ phase: "failed", phaseSource: "verdict" });
     expect(progressOf(undefined).message).toContain("999999999");
+  });
+
+  test("a cancel whose run was abandoned by lock contention reports the abandonment, not cancelled", async () => {
+    writeLock(pluginDir, {
+      ownerPid: 999_999_999,
+      instancePid: null,
+      kind: "keeper",
+      startedAt: new Date(clock.now()).toISOString(),
+    });
+    lockDepsOverride = { isPidAlive: () => true, deadlineMs: 100 };
+
+    const submitted = guard(sing().submit(submitInput()));
+    const cancelled = guard(sing().cancel(owner));
+    expect(await driveReject(cancelled)).toMatchObject({ code: "lock_busy" });
+    expect(await submitted.promise).toMatchObject({ ok: false, error: { code: "lock_busy" } });
+    expect(drivers).toHaveLength(0);
+    expect(existsSync(join(pluginDir, "tasks"))).toBe(false);
   });
 
   // -- Watchdog integration (#21): verdicts, lock release and warnings end-to-end
@@ -627,6 +654,219 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
       };
       expect(entry.lines).toEqual([ERROR_LINE]);
       expect(entry.workspace).toBe(join(pluginDir, "ws"));
+    });
+  });
+
+  // -- Cancel and interrupt (#22): the three ladder targets and the detach rule
+
+  describe("cancel and detach (#22)", () => {
+    const PARTIAL = "singleton partial step";
+
+    // An ack 60 ms after the paste, so the run parks in working with the turn
+    // still in flight and the test can stop it from outside.
+    const workingSubmit = async (): Promise<SubmitOk> => {
+      onCreated = ackSoon;
+      return await driveGuard(guard(sing().submit(submitInput())));
+    };
+
+    const endAnswer = (driver: ScriptedDriver): void => {
+      driver.afterPaste = () => {
+        driver.ack(PROMPT);
+        driver.endTurn(ANSWER);
+      };
+    };
+
+    test("a cancel landing on a completing turn reports the completion, not cancelled", async () => {
+      const first = await workingSubmit();
+      clock.setTimeout(() => drivers[0].endTurn(ANSWER), 120);
+
+      const result = await driveGuard(guard(sing().cancel(owner)));
+      expect(result).toEqual({
+        taskId: first.taskId,
+        verdict: "done",
+        archivePath: join(pluginDir, "tasks", first.taskId),
+      });
+      // The settle was an ordinary success: the push carried the answer.
+      await pumpUntil(() => pushes.length === 1);
+      expect(pushes[0]).toMatchObject({ taskId: first.taskId, ok: true, answer: ANSWER });
+      expect(progressOf(first.taskId)).toMatchObject({ phase: "done", verdict: undefined });
+    });
+
+    test("active cancel: cancelled verdict, archive, push; the queued task drains on a fresh instance and the Lock is released", async () => {
+      // The first driver parks in working (the cancel target); every later
+      // driver completes its turn, so the queued task drains on its own.
+      onCreated = (driver) => {
+        if (drivers.length === 1) {
+          driver.afterPaste = () => {
+            clock.setTimeout(() => driver.ack(PROMPT), 60);
+          };
+        } else {
+          endAnswer(driver);
+        }
+      };
+      const first = await driveGuard(guard(sing().submit(submitInput())));
+      const second = await sing().submit(submitInput()); // queued behind the active task
+      drivers[0].append({ shouldEndTurn: false, data: { fullResponse: PARTIAL } });
+
+      const cancelled = sing().cancel(owner);
+      drivers[0].isAlive = false; // the ladder's kill lands
+      const result = await driveGuard(guard(cancelled));
+
+      expect(result).toEqual({
+        taskId: first.taskId,
+        verdict: "cancelled",
+        archivePath: join(pluginDir, "tasks", first.taskId),
+      });
+      expect(pushes[0]).toMatchObject({
+        taskId: first.taskId,
+        ok: false,
+        verdict: "cancelled",
+        archivePath: result.archivePath,
+      });
+      expect(progressOf(first.taskId)).toMatchObject({ phase: "failed", phaseSource: "verdict", verdict: "cancelled" });
+      expect(readFileSync(join(result.archivePath!, "answer.md"), "utf8")).toBe(PARTIAL);
+      expect(JSON.parse(readFileSync(join(result.archivePath!, "meta.json"), "utf8"))).toMatchObject({
+        verdict: "cancelled",
+      });
+
+      // The queue drains behind the cancel: the second task ran to completion
+      // on a fresh instance, because the cancelled one was killed and dropped.
+      await pumpUntil(() => pushes.length === 2);
+      expect(pushes[1]).toMatchObject({ taskId: second.taskId, ok: true, answer: ANSWER });
+      expect(drivers).toHaveLength(2);
+
+      // The Lock was released with each settle: a third submit claims it and
+      // reuses the live instance.
+      endAnswer(drivers[1]);
+      const third = await driveGuard(guard(sing().submit(submitInput())));
+      await pumpUntil(() => progressOf(third.taskId).phase === "done");
+      expect(progressOf(third.taskId)).toMatchObject({ phase: "done", answer: ANSWER });
+      expect(drivers).toHaveLength(2);
+      expect(existsSync(join(pluginDir, "lock.json"))).toBe(false);
+    });
+
+    test("a double cancel resolves both awaits with the same result; a later named cancel is unknown_task", async () => {
+      const { taskId } = await workingSubmit();
+
+      const first = guard(sing().cancel(owner));
+      const second = guard(sing().cancel(owner));
+      drivers[0].isAlive = false; // the ladder's kill lands
+      const one = await driveGuard(first);
+      const two = await driveGuard(second);
+      expect(two).toEqual(one);
+      expect(one).toMatchObject({ taskId, verdict: "cancelled" });
+
+      const status = sing().statusExtra();
+      expect(await rejectionOf(sing().cancel(owner, taskId))).toMatchObject({ code: "unknown_task" });
+      expect(sing().statusExtra()).toEqual(status);
+    });
+
+    test("cancel during submit: the parked run call rejects naming the cancelled verdict and the push still fires", async () => {
+      onCreated = (driver) => {
+        driver.afterPaste = () => {}; // the paste lands, the ack never does
+      };
+      const submitted = guard(sing().submit(submitInput()));
+      await pumpUntil(() => (drivers[0]?.events ?? []).some((entry) => entry.event === "paste"));
+
+      await driveGuard(guard(sing().cancel(owner)));
+      expect(await driveReject(submitted)).toMatchObject({
+        code: "submit_failed",
+        verdict: "cancelled",
+        message: "task cancelled",
+      });
+      expect(pushes[0]).toMatchObject({ ok: false, verdict: "cancelled" });
+      expect(drivers[0].isAlive).toBe(false);
+      expect(existsSync(join(pluginDir, "lock.json"))).toBe(false);
+
+      // The slot is free again: a follow-up submit runs to completion.
+      onCreated = endAnswer;
+      const next = await driveGuard(guard(sing().submit(submitInput())));
+      await pumpUntil(() => progressOf(next.taskId).phase === "done");
+      expect(drivers).toHaveLength(2);
+    });
+
+    test("a queued cancel dequeues the task without ever spawning; it reads as unknown_task afterwards", async () => {
+      const first = await workingSubmit();
+      const second = await sing().submit(submitInput());
+      expect(drivers).toHaveLength(1);
+
+      expect(await driveGuard(guard(sing().cancel(owner, second.taskId)))).toEqual({
+        taskId: second.taskId,
+        verdict: "cancelled",
+      });
+      expect(sing().statusExtra()).toEqual({
+        queue: { depth: 0, taskIds: [] },
+        activeTask: { taskId: first.taskId, phase: "working" },
+      });
+      expect(syncErr(() => progressOf(second.taskId))).toMatchObject({ code: "unknown_task" });
+      expect(drivers).toHaveLength(1);
+      expect(existsSync(join(pluginDir, "tasks", second.taskId))).toBe(false);
+
+      // The active task was untouched and still delivers its own push.
+      drivers[0].endTurn(ANSWER);
+      await pumpUntil(() => pushes.length === 1);
+      expect(pushes.map((push) => push.taskId)).toEqual([first.taskId]);
+    });
+
+    test("an unknown id and a settled id refuse as unknown_task with no state change", async () => {
+      const { taskId } = await workingSubmit();
+
+      const inFlight = sing().statusExtra();
+      expect(await rejectionOf(sing().cancel(owner, "freebuff-nope"))).toMatchObject({ code: "unknown_task" });
+      expect(sing().statusExtra()).toEqual(inFlight);
+
+      drivers[0].endTurn(ANSWER);
+      await pumpUntil(() => pushes.length === 1);
+      const settled = sing().statusExtra();
+      expect(await rejectionOf(sing().cancel(owner, taskId))).toMatchObject({ code: "unknown_task" });
+      expect(sing().statusExtra()).toEqual(settled);
+    });
+
+    test("a cancel with nothing active is refused as no_active_task", async () => {
+      onCreated = endAnswer;
+      await driveGuard(guard(sing().submit(submitInput())));
+      await pumpUntil(() => sing().statusExtra().activeTask === null);
+      expect(await rejectionOf(sing().cancel(owner))).toMatchObject({ code: "no_active_task" });
+    });
+
+    test("a user interrupt while working detaches: the task runs to its real verdict and pushes", async () => {
+      const { taskId } = await workingSubmit();
+
+      sing().interrupt(owner, "Interrupted by user");
+      expect(sing().statusExtra().activeTask).toEqual({ taskId, phase: "working" });
+      drivers[0].endTurn(ANSWER);
+      await pumpUntil(() => pushes.length === 1);
+      expect(pushes[0]).toMatchObject({ taskId, ok: true, answer: ANSWER });
+      expect(progressOf(taskId)).toMatchObject({ phase: "done", answer: ANSWER });
+      expect(existsSync(join(pluginDir, "lock.json"))).toBe(false);
+    });
+
+    test.each(["Interrupted by user", "AbortError"] as const)(
+      "an interrupt while submitting (%s) cancels the task",
+      async (reason) => {
+        onCreated = (driver) => {
+          driver.afterPaste = () => {}; // the paste lands, the ack never does
+        };
+        const submitted = guard(sing().submit(submitInput()));
+        await pumpUntil(() => (drivers[0]?.events ?? []).some((entry) => entry.event === "paste"));
+
+        sing().interrupt(owner, reason);
+        expect(await driveReject(submitted)).toMatchObject({ code: "submit_failed", verdict: "cancelled" });
+        expect(pushes[0]).toMatchObject({ ok: false, verdict: "cancelled" });
+        expect(drivers[0].isAlive).toBe(false);
+      },
+    );
+
+    test("an interrupt from a non-owner session leaves the owner's task alone", async () => {
+      const { taskId } = await workingSubmit();
+      const other = bindingOf("session-other", "Other Session");
+
+      sing().interrupt(other, "Interrupted by user");
+      sing().interrupt(other, "AbortError");
+      expect(sing().statusExtra().activeTask).toEqual({ taskId, phase: "working" });
+      drivers[0].endTurn(ANSWER);
+      await pumpUntil(() => pushes.length === 1);
+      expect(pushes[0]).toMatchObject({ taskId, ok: true });
     });
   });
 });

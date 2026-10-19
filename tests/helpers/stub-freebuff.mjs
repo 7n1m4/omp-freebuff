@@ -17,6 +17,11 @@
 // - FREEBUFF_STUB_END_DELAY_MS  ms to hold between the Ack line and the end
 //                            lines, so a caller can observe the Task working
 //                            after the Ack (default 0)
+// - FREEBUFF_STUB_DIE_ON    esc | ctrl-c: exit on the Esc key, respectively on
+//                            the SECOND Ctrl-C (the first is consumed, proving
+//                            the repeated-Ctrl-C escalation reaches a real
+//                            exit); unset ignores both, so only the forced
+//                            kill clears the stub (reserved for #22's e2e)
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -33,6 +38,8 @@ const configDir = process.env.FREEBUFF_CONFIG_DIR;
 const inputLog = process.env.FREEBUFF_STUB_INPUT_LOG ?? null;
 const heldLogMs = process.env.FREEBUFF_STUB_HELD_LOG_MS ?? null;
 const endDelayMs = Number(process.env.FREEBUFF_STUB_END_DELAY_MS ?? "0");
+const dieOn = process.env.FREEBUFF_STUB_DIE_ON ?? null;
+let ctrlCs = 0;
 
 const logInput = (entry) => {
   if (inputLog !== null) appendFileSync(inputLog, JSON.stringify({ t: Date.now(), ...entry }) + "\n");
@@ -288,6 +295,7 @@ const handleEnter = () => {
 
 const handleEsc = () => {
   logInput({ event: "esc", key: "\x1b" });
+  if (dieOn === "esc") process.exit(0);
   // Esc on the cost modal falls back to the draft; the next submit re-pops it.
   if (modalOpen) {
     modalOpen = false;
@@ -353,6 +361,8 @@ process.stdin.on("data", (chunk) => {
     if (char === "\n") continue;
     if (char === "\x03") {
       logInput({ event: "ctrl-c", key: "\x03" });
+      ctrlCs++;
+      if (dieOn === "ctrl-c" && ctrlCs >= 2) process.exit(0);
       continue;
     }
     pending += char;

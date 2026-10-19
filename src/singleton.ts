@@ -78,6 +78,10 @@ export interface SingletonStatus {
   activeTask: { taskId: string; phase: Phase } | null;
 }
 
+/** What freebuff_cancel returns once the target has settled (#22); no archivePath for a queued Task.
+ * `verdict: "done"` reports a turn that completed inside the ladder's window — nothing was cancelled. */
+export type CancelResult = { taskId: string; verdict: Verdict | "done"; archivePath?: string };
+
 /** The paint timer's clock; production uses a real unref'd setInterval (ADR-0004). */
 interface PaintTick {
   now(): number;
@@ -132,6 +136,13 @@ interface TaskRecord {
   screenExcerpt: string | undefined;
   warnings: string[];
   pushed: boolean;
+  // The activation's full settle (run → settle/drain), so cancel can await the
+  // terminal state the funnel wrote.
+  settling: Promise<void> | undefined;
+  // The structured rejection an abandon ended the task with (lock contention,
+  // a broken junction): cancel reports it verbatim instead of a Verdict that
+  // does not exist.
+  failure: Rejection | undefined;
   // PromiseWithResolvers' type is not in the ES2022 lib; the shape is stable.
   ack: { promise: Promise<SubmitOk>; resolve(value: SubmitOk): void; reject(reason: unknown): void };
 }
@@ -243,6 +254,8 @@ export class FreebuffSingleton {
       screenExcerpt: undefined,
       warnings: [],
       pushed: false,
+      settling: undefined,
+      failure: undefined,
       ack: Promise.withResolvers<SubmitOk>(),
     };
     // A drained activation may reject with nobody awaiting; the handler keeps
@@ -272,7 +285,7 @@ export class FreebuffSingleton {
       return;
     }
     this.runner ??= new TurnRunner(this.runnerOptions);
-    void this.runner
+    task.settling = this.runner
       .run(task.prompt, {
         taskId: task.taskId,
         onPhase: (phase) => this.onPhase(task, phase),
@@ -281,6 +294,9 @@ export class FreebuffSingleton {
         (outcome) => this.settle(task, this.fieldsOf(outcome)),
         (error) => this.onRunError(task, error),
       );
+    // Cancel awaits this promise; a settle-path surprise must never surface as
+    // an unhandled rejection.
+    task.settling.catch(() => {});
   }
 
   private onPhase(task: TaskRecord, phase: TurnPhase): void {
@@ -356,6 +372,7 @@ export class FreebuffSingleton {
     task.phaseSource = "verdict";
     task.settledAt = this.now();
     task.message = rejection.message;
+    task.failure = rejection;
     this.clearPaint(task);
     this.drain();
     task.ack.reject(rejection);
@@ -415,13 +432,73 @@ export class FreebuffSingleton {
     return text ?? fail({ code: "no_instance", message: "no live freebuff instance" });
   }
 
-  // Mount-level stub; #22 replaces the whole method.
-  cancel(binding: OwnerBinding): void {
+  // Cancel (#22, ADR-0003): the Owner's stop. A queued Task is dequeued on the
+  // spot; the active Task is stopped through the runner and the call returns
+  // only once it has settled, with the truthful verdict: a natural settle that
+  // won the race reads as its own, not as cancelled.
+  async cancel(binding: OwnerBinding, taskId?: string): Promise<CancelResult> {
     this.gate(binding);
-    if (this.active() === undefined) {
-      fail({ code: "no_active_task", message: "no active freebuff task to cancel" });
+    let task: TaskRecord;
+    if (taskId !== undefined) {
+      const named = this.tasks.get(taskId);
+      if (named === undefined || named.settledAt !== undefined) {
+        throw { code: "unknown_task", message: `no freebuff task ${taskId} in flight` };
+      }
+      task = named;
+    } else {
+      const active = this.active();
+      if (active === undefined) {
+        throw { code: "no_active_task", message: "no active freebuff task to cancel" };
+      }
+      task = active;
     }
-    fail({ code: "cancel_not_implemented", message: "cancel lands with ticket #22" });
+    if (task.phase === "queued") {
+      // Dropped before it ever started: no activation, no spawn, no archive.
+      this.queue = this.queue.filter((id) => id !== task.taskId);
+      this.tasks.delete(task.taskId);
+      task.ack.reject({ code: "cancelled", verdict: "cancelled", message: "task cancelled while queued" });
+      return { taskId: task.taskId, verdict: "cancelled" };
+    }
+    this.runner?.cancel();
+    await task.settling;
+    if (task.phase === "done") {
+      // The turn completed inside the ladder's window: the cancel reports the
+      // completion instead of a cancelled verdict that never happened.
+      return { taskId: task.taskId, verdict: "done", archivePath: task.archivePath };
+    }
+    if (task.failure !== undefined) {
+      // The run ended in an abandon (lock contention, a broken junction): no
+      // Verdict exists, so cancel carries the abandonment's own rejection
+      // rather than dressing it up as cancelled.
+      throw task.failure;
+    }
+    // A settled failure always carries its Verdict (settle()); the abandon
+    // case threw above.
+    return { taskId: task.taskId, verdict: task.verdict!, archivePath: task.archivePath };
+  }
+
+  // The User-interrupt seam (#22): OMP aborted the tool call, and the Task's
+  // fate follows ADR-0003. A working (or settling) Task with the user-interrupt
+  // reason detaches: it keeps its Watchdog and Lock, its answer arrives by the
+  // settle push or a later poll. Anything else (queued, submitting, or any
+  // other abort reason) is a Cancel. Fire-and-forget and contained: the parked
+  // submit call learns through the ack rejection settle() already sends.
+  interrupt(binding: OwnerBinding, reason: unknown): void {
+    try {
+      for (const task of this.inFlight()) {
+        if (task.ownerSessionId !== binding.sessionId) continue;
+        if (reason === "Interrupted by user" && (task.phase === "working" || task.phase === "settling")) continue;
+        if (task.phase === "queued") {
+          this.queue = this.queue.filter((id) => id !== task.taskId);
+          this.tasks.delete(task.taskId);
+          task.ack.reject({ code: "cancelled", verdict: "cancelled", message: "task cancelled while queued" });
+        } else {
+          this.runner?.cancel();
+        }
+      }
+    } catch {
+      // An interrupt handler must never throw into the host.
+    }
   }
 
   // #23's seam: the process keeps the tasks, the queue and the runner; only

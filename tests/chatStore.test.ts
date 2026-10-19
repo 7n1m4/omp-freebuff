@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
-import { detectTurnEnd, lineMentionsPrompt, newestChatDir, projectKey, readChats } from "../src/protocol/chatStore";
+import { detectTurnEnd, lineMentionsPrompt, newestChatDir, partialAnswer, projectKey, readChats } from "../src/protocol/chatStore";
 import type { ChatDirSnapshot, TurnBaseline } from "../src/protocol/chatStore";
 
 const dir = new URL("./fixtures/chat/", import.meta.url);
@@ -134,6 +134,49 @@ describe("detectTurnEnd", () => {
       '{"msg":"Main prompt finished"}\n';
     const s = snap("chat-008", 1000, text, 0);
     expect(detectTurnEnd([s], baselineOf(s))).toEqual({ done: true, answer: "Kept the answer." });
+  });
+});
+
+describe("partialAnswer", () => {
+  it("takes the last unfinished step's fullResponse over earlier ones", () => {
+    const text =
+      '{"shouldEndTurn":false,"data":{"fullResponse":"first step"}}\n' +
+      '{"shouldEndTurn":false,"data":{"fullResponse":"second step"}}\n';
+    expect(partialAnswer(text)).toBe("second step");
+  });
+
+  it("ignores completed-turn lines", () => {
+    const text =
+      '{"shouldEndTurn":true,"data":{"fullResponse":"the finished answer"}}\n' +
+      '{"shouldEndTurn":false,"data":{"fullResponse":"the partial"}}\n';
+    expect(partialAnswer(text)).toBe("the partial");
+  });
+
+  it("skips an unfinished line without a fullResponse and falls back to an earlier one", () => {
+    const text =
+      '{"shouldEndTurn":false,"data":{"fullResponse":"earlier step"}}\n' +
+      '{"shouldEndTurn":false,"data":{}}\n' +
+      '{"type":"user","parts":["still going"]}\n';
+    expect(partialAnswer(text)).toBe("earlier step");
+  });
+
+  it("returns null with no unfinished step", () => {
+    expect(partialAnswer("")).toBeNull();
+    expect(partialAnswer('{"shouldEndTurn":true,"data":{"fullResponse":"done"}}\n')).toBeNull();
+    expect(partialAnswer('{"msg":"hello"}\n')).toBeNull();
+  });
+
+  it("reads data.fullResponse else the top-level field", () => {
+    expect(partialAnswer('{"shouldEndTurn":false,"data":{"fullResponse":"nested"}}\n')).toBe("nested");
+    expect(partialAnswer('{"shouldEndTurn":false,"fullResponse":"top level"}\n')).toBe("top level");
+  });
+
+  it("tolerates torn lines around the partial", () => {
+    const text =
+      '{"shouldEndTurn":false,"data":{"fullResp' +
+      "\n" +
+      '{"shouldEndTurn":false,"data":{"fullResponse":"kept"}}\n';
+    expect(partialAnswer(text)).toBe("kept");
   });
 });
 

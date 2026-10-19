@@ -5,9 +5,9 @@
 // virtual time cannot drive it and every wait is a bounded poll.
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import { LockBusyError, writeLock } from "../src/lock";
+import { LockBusyError, pidAlive, writeLock } from "../src/lock";
 import { TurnRunner } from "../src/turnRunner";
 import { eventsOf, kindsOf, readInputLog } from "./helpers/stubInputLog";
 
@@ -357,6 +357,145 @@ describe("blocking Task path over the stub child", () => {
       );
       await h.runner.dispose();
       await h.runner.dispose();
+    },
+    30_000,
+  );
+});
+
+// The cancel ladder's three outcomes (#22), over the real PTY path: graceful
+// exit inside the first poll, exit after a consumed first Ctrl-C, and a wedged
+// Instance only the forced kill clears. The stub's DIE_ON knob makes the two
+// graceful exits reachable; without it the stub ignores every keystroke.
+describe("cancel ladder over the stub child (#22)", () => {
+  // ~30 s hold between the Ack and the end lines, so the turn is still working
+  // when the cancel lands and only the ladder can end it.
+  const HELD = "30000";
+
+  // Bounded wall-clock polls: the counterpart is a real child behind a real
+  // PTY, which fake timers cannot advance.
+  const sleep = (ms: number): Promise<void> => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, ms);
+    return promise;
+  };
+  const until = async <T>(probe: () => T, ms: number): Promise<T | null> => {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const value = probe();
+      if (value) return value;
+      if (Date.now() > deadline) return null;
+      await sleep(25);
+    }
+  };
+
+  // The Ack: a chat-store line naming the prompt, so the cancel lands while
+  // the Task is confirmed working.
+  const acked = (configDir: string, workspace: string): boolean => {
+    const chats = join(configDir, "projects", basename(workspace), "chats");
+    try {
+      for (const entry of readdirSync(chats)) {
+        const log = join(chats, entry, "log.jsonl");
+        if (existsSync(log) && readFileSync(log, "utf8").includes(JSON.stringify(PROMPT))) return true;
+      }
+    } catch {
+      // No chats dir yet: the stub has not acked.
+    }
+    return false;
+  };
+
+  test(
+    "outcome 1: the stub exits gracefully on Esc; one esc, zero ctrl-c, archived cancelled",
+    async () => {
+      const h = harness("happy", { FREEBUFF_STUB_DIE_ON: "esc", FREEBUFF_STUB_END_DELAY_MS: HELD });
+      cleanup = h.dispose;
+      const run = h.runner.run(PROMPT);
+      expect(await until(() => acked(h.configDir, h.workspace), 10_000)).toBe(true);
+
+      h.runner.cancel();
+      const outcome = await run;
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("expected cancelled");
+      expect(outcome.verdict).toBe("cancelled");
+      const archive = outcome.archivePath!;
+      expect(JSON.parse(readFileSync(join(archive, "meta.json"), "utf8"))).toMatchObject({ verdict: "cancelled" });
+      expect(readFileSync(join(archive, "answer.md"), "utf8")).toBe("");
+
+      const events = readInputLog(h.inputLog);
+      expect(eventsOf(events, "esc")).toHaveLength(1);
+      expect(eventsOf(events, "ctrl-c")).toHaveLength(0);
+      const pid = eventsOf(events, "spawn")[0]!.pid!;
+      expect(await until(() => !pidAlive(pid), 5_000)).toBe(true);
+      expect(existsSync(lockPathOf(h.pluginDir))).toBe(false);
+
+      // The next Task spawns a fresh instance.
+      const second = h.runner.run(PROMPT);
+      expect(await until(() => eventsOf(readInputLog(h.inputLog), "spawn").length === 2, 10_000)).toBe(true);
+      await h.runner.dispose();
+      await second;
+    },
+    30_000,
+  );
+
+  test(
+    "outcome 2: the first Ctrl-C is consumed, the second exits; one esc, two ctrl-c",
+    async () => {
+      const h = harness("happy", { FREEBUFF_STUB_DIE_ON: "ctrl-c", FREEBUFF_STUB_END_DELAY_MS: HELD });
+      cleanup = h.dispose;
+      const run = h.runner.run(PROMPT);
+      expect(await until(() => acked(h.configDir, h.workspace), 10_000)).toBe(true);
+
+      h.runner.cancel();
+      const outcome = await run;
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("expected cancelled");
+      expect(outcome.verdict).toBe("cancelled");
+      expect(JSON.parse(readFileSync(join(outcome.archivePath!, "meta.json"), "utf8"))).toMatchObject({
+        verdict: "cancelled",
+      });
+
+      const events = readInputLog(h.inputLog);
+      expect(eventsOf(events, "esc")).toHaveLength(1);
+      expect(eventsOf(events, "ctrl-c")).toHaveLength(2);
+      const pid = eventsOf(events, "spawn")[0]!.pid!;
+      expect(await until(() => !pidAlive(pid), 5_000)).toBe(true);
+      expect(existsSync(lockPathOf(h.pluginDir))).toBe(false);
+
+      const second = h.runner.run(PROMPT);
+      expect(await until(() => eventsOf(readInputLog(h.inputLog), "spawn").length === 2, 10_000)).toBe(true);
+      await h.runner.dispose();
+      await second;
+    },
+    30_000,
+  );
+
+  test(
+    "outcome 3: a wedged stub ignores every keystroke; the forced kill clears it; one esc, three ctrl-c",
+    async () => {
+      const h = harness("wedged");
+      cleanup = h.dispose;
+      const run = h.runner.run(PROMPT);
+      expect(await until(() => acked(h.configDir, h.workspace), 10_000)).toBe(true);
+
+      h.runner.cancel();
+      const outcome = await run;
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("expected cancelled");
+      expect(outcome.verdict).toBe("cancelled");
+      expect(JSON.parse(readFileSync(join(outcome.archivePath!, "meta.json"), "utf8"))).toMatchObject({
+        verdict: "cancelled",
+      });
+
+      const events = readInputLog(h.inputLog);
+      expect(eventsOf(events, "esc")).toHaveLength(1);
+      expect(eventsOf(events, "ctrl-c")).toHaveLength(3);
+      const pid = eventsOf(events, "spawn")[0]!.pid!;
+      expect(await until(() => !pidAlive(pid), 5_000)).toBe(true);
+      expect(existsSync(lockPathOf(h.pluginDir))).toBe(false);
+
+      const second = h.runner.run(PROMPT);
+      expect(await until(() => eventsOf(readInputLog(h.inputLog), "spawn").length === 2, 10_000)).toBe(true);
+      await h.runner.dispose();
+      await second;
     },
     30_000,
   );

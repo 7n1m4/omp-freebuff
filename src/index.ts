@@ -177,16 +177,30 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
       "One Task runs at a time, queue depth 4; only the owning session's calls are answered.",
     parameters: runParams,
     loadMode: "essential",
-    execute: async (_toolCallId, { prompt }, _signal, _onUpdate, ctx) => {
+    execute: async (_toolCallId, { prompt }, signal, _onUpdate, ctx) => {
+      const singleton = singletonOf();
+      const binding = bindingFor(pi, ctx);
+      // The user stopping the parent's turn aborts this signal (#22): the
+      // singleton decides detach (working) vs cancel (queued/submitting).
+      const onAbort = () => {
+        try {
+          singleton.interrupt(binding, signal?.reason);
+        } catch {
+          // Contained: an interrupt must never fail the tool call itself.
+        }
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
       try {
-        const ok = await singletonOf().submit({
+        const ok = await singleton.submit({
           prompt,
           cwd: ctx.cwd,
-          binding: bindingFor(pi, ctx),
+          binding,
         });
         return { content: [{ type: "text", text: runText(ok) }], details: ok };
       } catch (error) {
         return errorResult(error);
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
       }
     },
   });
@@ -220,26 +234,39 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
     },
   });
 
-  const noParams = pi.zod.object({});
-  pi.registerTool<typeof noParams>({
+  const cancelParams = pi.zod.object({
+    taskId: pi.zod.string().optional().describe("Omit to cancel the active Task; or name a queued Task."),
+  });
+  pi.registerTool<typeof cancelParams>({
     name: "freebuff_cancel",
     label: "Freebuff cancel",
     description:
-      "Refuses unless this session owns the active freebuff Task; the cancel ladder itself lands with " +
-      "ticket #22 (cancel_not_implemented until then). Owner-gated.",
-    parameters: noParams,
+      "Stop the active freebuff Task (Esc, a wait, Ctrl-C up to three times, then a forced kill) or dequeue a " +
+      "queued one. Owner-gated: refused while another session's Task is in flight. Waits for the Task to " +
+      "settle before returning, which can take up to about five seconds. An active Task's partial progress " +
+      "is archived and the result carries its archivePath; a dequeued Task never started, so it returns " +
+      "{taskId, verdict} only.",
+    parameters: cancelParams,
     loadMode: "essential",
-    execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
+    execute: async (_toolCallId, { taskId }, _signal, _onUpdate, ctx) => {
       try {
-        singletonOf().cancel(bindingFor(pi, ctx));
-        // Unreachable while the ladder is #22's: cancel always throws today.
-        return { content: [{ type: "text", text: "freebuff cancel requested" }] };
+        const result = await singletonOf().cancel(bindingFor(pi, ctx), taskId);
+        const archive = result.archivePath === undefined ? "" : `; archive: ${result.archivePath}`;
+        const head =
+          result.verdict === "done"
+            ? `freebuff task ${result.taskId} finished before the cancel landed`
+            : `freebuff task ${result.taskId} cancelled (verdict ${result.verdict})`;
+        return {
+          content: [{ type: "text", text: `${head}${archive}` }],
+          details: result,
+        };
       } catch (error) {
         return errorResult(error);
       }
     },
   });
 
+  const noParams = pi.zod.object({});
   pi.registerTool<typeof noParams>({
     name: "freebuff_status",
     label: "Freebuff status",

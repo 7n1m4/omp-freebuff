@@ -3,8 +3,8 @@
 // the Lock release rides withLock's finally on every exit path. Never auto-
 // respawns and never re-pastes a half-run Task; on failure the Instance is
 // killed and dropped, and the next Task starts fresh. The deadline/frozen
-// verdicts come from the runner's own watchdog (#21); cancelled stays with the
-// stop ticket (#22).
+// verdicts come from the runner's own watchdog (#21); cancel() (#22) stops the
+// run through this same settle funnel under `cancelled`.
 import { appendFileSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeTaskArchive } from "./archive";
@@ -19,13 +19,13 @@ import {
 import { withLock, type LockDeps } from "./lock";
 import { COUNTDOWN_REGEX, END_SESSION } from "./protocol/markers";
 import { classifyScreen, errorLines, EXCERPT_LINES, freezeKey, screenExcerpt } from "./protocol/screen";
-import type { TurnBaseline } from "./protocol/chatStore";
+import { partialAnswer as partialAnswerOf, type TurnBaseline } from "./protocol/chatStore";
 import { readJunctionTarget } from "./workspace";
 
 // The nine-set from CONTEXT. This runner's own paths produce ack_missing,
 // crashed, no_answer, driver_error, slot_held and displaced; its watchdog adds
-// deadline/frozen; cancelled is owned by the stop ticket (#22) and is never
-// produced here.
+// deadline/frozen; the cancel path (#22) produces cancelled, carrying the last
+// unfinished step's partial answer.
 export type Verdict =
   | "ack_missing"
   | "deadline"
@@ -76,6 +76,8 @@ export type TurnOutcome =
       screenExcerpt?: string;
       archivePath?: string;
       warnings?: string[];
+      /** The cancelled run's last unfinished step; a cancelled settle archives it as the answer. */
+      partialAnswer?: string;
     };
 
 export interface TurnRunnerOptions {
@@ -123,6 +125,9 @@ export class TurnRunner {
   private readonly timings: DriverTimings;
   private readonly clock: Clock;
   private driver: DriverLike | null = null;
+  // Sticky between runs and cleared when a run begins, so a cancel with no run
+  // in flight cannot poison the next one; the checks in runLocked read it.
+  private cancelRequested = false;
 
   constructor(options: TurnRunnerOptions) {
     this.options = options;
@@ -130,11 +135,27 @@ export class TurnRunner {
     this.clock = options.clock ?? realClock;
   }
 
+  // The Owner's stop request (#22): sticky until the next run picks it up. A
+  // live Instance escalates straight to the cancel ladder fire-and-forget,
+  // because the ladder always ends in the kill and the run observes the death
+  // through its own funnel, so cancel() never awaits it.
+  cancel(): void {
+    if (this.cancelRequested) return;
+    this.cancelRequested = true;
+    const driver = this.driver;
+    if (driver !== null && driver.alive()) {
+      void driver.cancelActive().catch(() => {
+        // The forced kill is the last rung; a broken escalation is contained.
+      });
+    }
+  }
+
   async run(
     prompt: string,
     override?: { taskId?: string; onPhase?: (phase: TurnPhase) => void },
   ): Promise<TurnOutcome> {
     // LockBusyError (cross-Owner contention) propagates: a caller mistake, not a Task verdict.
+    this.cancelRequested = false;
     const startedAt = this.clock.now();
     const taskId = override?.taskId ?? this.options.taskId;
     const onPhase = override?.onPhase ?? this.options.onPhase;
@@ -190,12 +211,27 @@ export class TurnRunner {
     };
     phase("submitting");
     try {
+      // A cancel that arrived between run() and the Lock claim: nothing was
+      // spawned, the funnel still archives the empty settle.
+      if (this.cancelRequested) {
+        const outcome = this.cancelledOutcome(null);
+        await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
+        this.dropDriver();
+        return outcome;
+      }
       // 1. Instance: reuse the live one, else spawn. The record names the pid
       // only once the child exists (ADR-0001: it goes down null before that).
       let driver = this.driver;
       if (driver === null || !driver.alive()) {
         driver = await this.startDriver();
         this.driver = driver;
+      }
+      // A cancel that landed while the spawn was in flight had no driver to
+      // trip; its escalation fires now against the fresh one.
+      if (this.cancelRequested) {
+        void driver.cancelActive().catch(() => {
+          // The forced kill is the last rung; a broken escalation is contained.
+        });
       }
       const pid = driver.pid();
       if (pid !== null) lock.setInstancePid(pid);
@@ -205,7 +241,11 @@ export class TurnRunner {
       if (!settled.ok) {
         const excerpt = settled.excerpt;
         let outcome: TurnOutcome;
-        if (settled.reason === "slot_held") {
+        if (this.cancelRequested) {
+          // The ladder may have killed the Instance mid-wait: the user's stop
+          // outranks the settle failure it caused.
+          outcome = this.cancelledOutcome(baseline);
+        } else if (settled.reason === "slot_held") {
           outcome = { ok: false, verdict: "slot_held", message: "the Hour slot is held by another window", screenExcerpt: excerpt };
         } else if (settled.reason === "displaced") {
           outcome = { ok: false, verdict: "displaced", message: "the Instance was displaced; no keystrokes sent", screenExcerpt: excerpt };
@@ -234,6 +274,13 @@ export class TurnRunner {
         acked = await this.ackWindow(driver, baseline, prompt, draft);
       }
       if (!acked) {
+        // The stop landed mid-submit: the run was cancelled, not unacked.
+        if (this.cancelRequested) {
+          const outcome = this.cancelledOutcome(baseline);
+          await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
+          this.dropDriver();
+          return outcome;
+        }
         await driver.cancelActive();
         const outcome: TurnOutcome = {
           ok: false,
@@ -256,7 +303,15 @@ export class TurnRunner {
         const work = this.workLoop(driver, baseline, phase);
         // The race owns the settle; a post-settle loop death must not surface unhandled.
         work.catch(() => {});
-        const outcome = await Promise.race([work, watchdog.tripped]);
+        const raced = await Promise.race([work, watchdog.tripped]);
+        // The user's cancel outranks the raced failure: the ladder killed the
+        // Instance, so the work loop typically reports crashed first. A
+        // success that beat the kill stays truthful, and so does a no_answer —
+        // the turn ended by itself; a cancel a tick later does not relabel it.
+        const outcome =
+          this.cancelRequested && !raced.ok && raced.verdict !== "no_answer"
+            ? this.cancelledOutcome(baseline)
+            : raced;
         // Stopping before the warnings attach lets the final scan catch lines
         // printed just before the turn ended; the second stop below is a no-op.
         await watchdog.stop();
@@ -271,6 +326,14 @@ export class TurnRunner {
     } catch (error) {
       // No errors cross this seam: a mid-submit death is a crash, everything
       // else a driver error. The instance is never respawned inside a run.
+      // A stop that killed the Instance mid-submit reads as cancelled instead.
+      if (this.cancelRequested) {
+        const outcome = this.cancelledOutcome(baseline);
+        if (warnings.length > 0) outcome.warnings = warnings;
+        await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
+        this.dropDriver();
+        return outcome;
+      }
       const outcome: TurnOutcome =
         error instanceof FreebuffDriverError && error.reason === "process_exited"
           ? { ok: false, verdict: "crashed", message: messageOf(error) }
@@ -503,7 +566,7 @@ export class TurnRunner {
         verdict: outcome.ok ? null : outcome.verdict,
         phaseLog: [...phases, `${outcome.ok ? "done" : "failed"}@${new Date(now).toISOString()}`],
         startedAt,
-        answer: outcome.ok ? outcome.answer : "",
+        answer: outcome.ok ? outcome.answer : (outcome.partialAnswer ?? ""),
         chatMessages,
         screen,
         stderr,
@@ -592,6 +655,21 @@ export class TurnRunner {
     const driver = this.driver;
     this.driver = null;
     driver?.kill();
+  }
+
+  // The cancelled outcome (#22): the partial answer is read while the driver
+  // is still held, so the drop that follows cannot lose it. A run cancelled
+  // before any Turn line carries no partial.
+  private cancelledOutcome(baseline: TurnBaseline | null): TurnOutcome {
+    let partialAnswer: string | undefined;
+    if (baseline !== null) {
+      try {
+        partialAnswer = partialAnswerOf(this.driver?.chatLog?.(baseline) ?? "") ?? undefined;
+      } catch {
+        partialAnswer = undefined;
+      }
+    }
+    return { ok: false, verdict: "cancelled", message: "task cancelled", partialAnswer };
   }
 
   // Tolerant full-screen read: a dead or broken driver archives an empty screen
