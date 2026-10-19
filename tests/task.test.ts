@@ -74,11 +74,11 @@ describe("blocking Task path over the stub child", () => {
       const h = harness("happy");
       cleanup = h.dispose;
       const first = await h.runner.run(PROMPT);
-      expect(first).toEqual({ ok: true, answer: ANSWER });
+      expect(first).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
       expect(existsSync(lockPathOf(h.pluginDir))).toBe(false);
 
       const second = await h.runner.run(PROMPT);
-      expect(second).toEqual({ ok: true, answer: ANSWER });
+      expect(second).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
       const events = readInputLog(h.inputLog);
       expect(eventsOf(events, "spawn")).toHaveLength(1);
       await h.runner.dispose();
@@ -112,7 +112,7 @@ describe("blocking Task path over the stub child", () => {
       expect(Buffer.byteLength(bigPrompt, "utf8")).toBeGreaterThan(5_000);
 
       const outcome = await h.runner.run(bigPrompt);
-      expect(outcome).toEqual({ ok: true, answer: `stub(DeepSeek V4.1 Flash): ${bigPrompt}` });
+      expect(outcome).toEqual({ ok: true, answer: `stub(DeepSeek V4.1 Flash): ${bigPrompt}`, archivePath: expect.any(String) });
       expect(Buffer.byteLength((outcome as { answer: string }).answer, "utf8")).toBe(
         Buffer.byteLength(`stub(DeepSeek V4.1 Flash): ${bigPrompt}`, "utf8"),
       );
@@ -171,7 +171,7 @@ describe("blocking Task path over the stub child", () => {
       // The stub paints working on submit and writes the ack line ~1.5s later:
       // the screen half of the Ack carries the submit, so one paste suffices.
       const outcome = await h.runner.run(PROMPT);
-      expect(outcome).toEqual({ ok: true, answer: ANSWER });
+      expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
       expect(eventsOf(readInputLog(h.inputLog), "paste")).toHaveLength(1);
       await h.runner.dispose();
       await h.runner.dispose();
@@ -188,7 +188,7 @@ describe("blocking Task path over the stub child", () => {
       // change): window 1 (0.9s) finds nothing, the single re-paste retry runs,
       // and the second submit acks inside window 2.
       const outcome = await h.runner.run(PROMPT);
-      expect(outcome).toEqual({ ok: true, answer: ANSWER });
+      expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
       expect(existsSync(lockPathOf(h.pluginDir))).toBe(false);
       expect(eventsOf(readInputLog(h.inputLog), "paste")).toHaveLength(2);
       expect(eventsOf(readInputLog(h.inputLog), "enter")).toHaveLength(0);
@@ -204,7 +204,7 @@ describe("blocking Task path over the stub child", () => {
       const h = harness("first-submit");
       cleanup = h.dispose;
       const outcome = await h.runner.run(PROMPT);
-      expect(outcome).toEqual({ ok: true, answer: ANSWER });
+      expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
 
       expect(kindsOf(readInputLog(h.inputLog))).toEqual(["spawn", "paste", "submit", "enter"]);
       const events = readInputLog(h.inputLog);
@@ -281,7 +281,7 @@ describe("blocking Task path over the stub child", () => {
       const h = harness("happy");
       cleanup = h.dispose;
       const outcome = await h.runner.run(PROMPT);
-      expect(outcome).toEqual({ ok: true, answer: ANSWER });
+      expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
 
       const tasks = join(h.pluginDir, "tasks");
       const ids = readdirSync(tasks).sort();

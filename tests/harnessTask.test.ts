@@ -79,7 +79,7 @@ describe("Task submitted from a real OMP session", () => {
         );
         expect(outcomeTexts).toHaveLength(1);
         const outcome = JSON.parse(outcomeTexts[0]) as TurnOutcome;
-        expect(outcome).toEqual({ ok: true, answer: ANSWER });
+        expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
       } finally {
         await state.probeRunner?.dispose();
         await harness.dispose();

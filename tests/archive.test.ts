@@ -125,6 +125,14 @@ describe("writeTaskArchive", () => {
     ]);
   });
 
+  test("a taskId input pins the directory name instead of a generated stamp", () => {
+    const { taskId, archivePath } = writeTaskArchive(baseInput({ taskId: "task-20" }));
+    expect(taskId).toBe("task-20");
+    expect(archivePath).toBe(join(pluginDir, "tasks", "task-20"));
+    const meta = JSON.parse(readFileSync(join(archivePath, "meta.json"), "utf8")) as { id: string };
+    expect(meta.id).toBe("task-20");
+  });
+
   test("records a null verdict on success and a verdict string on failure", () => {
     const success = writeTaskArchive(baseInput({ verdict: null }));
     expect(JSON.parse(readFileSync(join(success.archivePath, "meta.json"), "utf8")).verdict).toBeNull();

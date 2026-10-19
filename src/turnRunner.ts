@@ -35,6 +35,9 @@ export type Verdict =
   | "displaced"
   | "cancelled";
 
+/** The runner's own step phases (CONTEXT: Phase); the Verdicts are outcomes, not steps. */
+export type TurnPhase = "submitting" | "working" | "settling";
+
 /** The timers the runner lives on; production passes `realClock`, tests a virtual one. */
 export interface Clock {
   now(): number;
@@ -49,8 +52,8 @@ export const realClock: Clock = {
 };
 
 export type TurnOutcome =
-  | { ok: true; answer: string }
-  | { ok: false; verdict: Verdict; message: string; screenExcerpt?: string };
+  | { ok: true; answer: string; archivePath?: string }
+  | { ok: false; verdict: Verdict; message: string; screenExcerpt?: string; archivePath?: string };
 
 export interface TurnRunnerOptions {
   /** lock.json home — temp in tests, %LOCALAPPDATA%\freebuff-plugin in production. */
@@ -69,6 +72,10 @@ export interface TurnRunnerOptions {
   lockDeps?: Pick<LockDeps, "isPidAlive" | "killPid" | "hasLiveTask" | "deadlineMs">;
   /** Returns a STARTED driver. Defaults to a real FreebuffDriver on command/env/timings/clock. */
   createDriver?: () => Promise<DriverLike>;
+  /** Submit-time Task id; pins the archive directory name instead of a generated stamp. */
+  taskId?: string;
+  /** Observes each phase step, synchronously at the existing phase call sites; a throw is contained. */
+  onPhase?: (phase: TurnPhase) => void;
 }
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -104,6 +111,18 @@ export class TurnRunner {
     );
   }
 
+  // Slice 3's freebuff_status/freebuff_screen read the live slot through these,
+  // so the async layer never reaches into the private driver.
+  instancePid(): number | null {
+    const driver = this.driver;
+    return driver !== null && driver.alive() ? driver.pid() : null;
+  }
+
+  async screenText(): Promise<string | null> {
+    const driver = this.driver;
+    return driver !== null && driver.alive() ? await driver.screenText() : null;
+  }
+
   private async runLocked(
     prompt: string,
     lock: { setInstancePid(pid: number): void },
@@ -112,8 +131,13 @@ export class TurnRunner {
     const phases: string[] = [];
     // The Turn's chat dirs are named by the baseline, which only exists once taken.
     let baseline: TurnBaseline | null = null;
-    const phase = (name: string): void => {
+    const phase = (name: TurnPhase): void => {
       phases.push(`${name}@${new Date(this.clock.now()).toISOString()}`);
+      try {
+        this.options.onPhase?.(name);
+      } catch {
+        // Contained: a throwing observer must not fail the Turn.
+      }
     };
     phase("submitting");
     try {
@@ -225,14 +249,14 @@ export class TurnRunner {
   // nothing). All capture reads happen while the driver is still held: every
   // failure path drops it only after this returns. The write is best-effort the
   // way writeScreenDump is: an archive failure must never become a Task
-  // failure, so the outcome leaves untouched.
+  // failure, so the outcome leaves archivePath undefined.
   private async writeArchive(
     prompt: string,
     startedAt: number,
     phases: string[],
     baseline: TurnBaseline | null,
     outcome: TurnOutcome,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const driver = this.driver;
     let chatMessages = "";
     try {
@@ -250,8 +274,9 @@ export class TurnRunner {
     try {
       const now = this.clock.now();
       const instancePid = driver?.pid() ?? null;
-      writeTaskArchive({
+      const { archivePath } = writeTaskArchive({
         pluginDir: this.options.pluginDir,
+        taskId: this.options.taskId,
         now,
         prompt,
         target: readJunctionTarget(this.options.workspace) ?? null,
@@ -265,8 +290,11 @@ export class TurnRunner {
         screen,
         stderr,
       });
+      outcome.archivePath = archivePath;
+      return archivePath;
     } catch {
       // The Verdict outranks the archive; a failed write changes nothing.
+      return undefined;
     }
   }
 

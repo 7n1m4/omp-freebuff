@@ -8,6 +8,8 @@ import type { Verdict } from "./turnRunner";
 
 export interface TaskArchiveInput {
   pluginDir: string;
+  /** Submit-time Task id; pins the directory name. Absent: a stamp id is generated. */
+  taskId?: string;
   /** Settle time: stamps the id, and serves as settledAt in the timings. */
   now: number;
   prompt: string;
@@ -33,7 +35,7 @@ export function nextTaskId(now: number): string {
 }
 
 export function writeTaskArchive(input: TaskArchiveInput): { taskId: string; archivePath: string } {
-  const taskId = nextTaskId(input.now);
+  const taskId = input.taskId ?? nextTaskId(input.now);
   const archivePath = join(input.pluginDir, "tasks", taskId);
   // A new unique directory per call means a crash mid-write can leave a partial
   // archive but can never corrupt a previous one.

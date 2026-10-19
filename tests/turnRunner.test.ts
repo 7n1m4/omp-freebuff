@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { LockBusyError, writeLock } from "../src/lock";
 import { COUNTDOWN_REGEX, END_SESSION } from "../src/protocol/markers";
 import { classifyScreen } from "../src/protocol/screen";
-import { TurnRunner } from "../src/turnRunner";
+import { TurnRunner, type TurnPhase, type TurnRunnerOptions } from "../src/turnRunner";
 import { replayFixture } from "./helpers/replay";
 import { ScriptedDriver, type ScriptedEvent } from "./helpers/scriptedDriver";
 import { VirtualClock } from "./helpers/virtualClock";
@@ -61,6 +61,7 @@ const lockPath = () => join(pluginDir, "lock.json");
 const newRunner = (
   lockDeps?: { isPidAlive?: (pid: number) => boolean; deadlineMs?: number },
   driver: ScriptedDriver = scripted,
+  extra?: Pick<TurnRunnerOptions, "taskId" | "onPhase">,
 ): TurnRunner =>
   new TurnRunner({
     pluginDir,
@@ -75,6 +76,7 @@ const newRunner = (
       return driver;
     },
     lockDeps,
+    ...extra,
   });
 
 // Runs `promise` to completion on the virtual clock: timers only fire inside
@@ -122,13 +124,13 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     scripted.afterPaste = ackAndEnd;
 
     const first = await drive(runner.run(PROMPT));
-    expect(first).toEqual({ ok: true, answer: ANSWER });
+    expect(first).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
     expect(kindsOf()).toEqual(["spawn", "paste", "submit"]);
 
     scripted.settle = { ok: true, state: "ready" };
     scripted.events = [];
     const second = await drive(runner.run(PROMPT));
-    expect(second).toEqual({ ok: true, answer: ANSWER });
+    expect(second).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
     // No spawn: the live instance is reused, so the run opens with /new.
     expect(kindsOf()).toEqual(["new", "paste", "submit"]);
     // One factory call across both runs: the live instance was reused.
@@ -144,7 +146,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     };
 
     const outcome = await drive(runner.run(PROMPT));
-    expect(outcome).toEqual({ ok: true, answer: ANSWER });
+    expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
     expect(existsSync(lockPath())).toBe(false);
     expect(scripted.isAlive).toBe(true);
   });
@@ -172,7 +174,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     scripted.afterPaste = ackAndEnd;
 
     const outcome = await drive(runner.run(PROMPT));
-    expect(outcome).toEqual({ ok: true, answer: ANSWER });
+    expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
     expect(pastesOf()).toHaveLength(1);
     expect(entersOf()).toHaveLength(0);
   });
@@ -185,7 +187,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     };
 
     const outcome = await drive(runner.run(PROMPT));
-    expect(outcome).toEqual({ ok: true, answer: ANSWER });
+    expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
     expect(pastesOf()).toHaveLength(1);
     expect(entersOf()).toHaveLength(0);
   });
@@ -202,7 +204,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     };
 
     const outcome = await drive(runner.run(PROMPT));
-    expect(outcome).toEqual({ ok: true, answer: ANSWER });
+    expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
     expect(pastesOf()).toHaveLength(1);
     expect(entersOf().map((entry) => entry.key)).toEqual(["\r"]);
   });
@@ -235,7 +237,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     };
 
     const outcome = await drive(runner.run(PROMPT));
-    expect(outcome).toEqual({ ok: true, answer: ANSWER });
+    expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
     expect(pastesOf()).toHaveLength(1);
     expect(entersOf().map((entry) => entry.key)).toEqual(["\r"]);
   });
@@ -346,7 +348,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     const startedAt = clock.now();
 
     const outcome = await drive(newRunner().run(PROMPT));
-    expect(outcome).toEqual({ ok: true, answer: ANSWER });
+    expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
 
     const ids = archiveIds();
     expect(ids).toHaveLength(1);
@@ -375,7 +377,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     scripted.afterPaste = ackAndEnd;
 
     const outcome = await drive(newRunner().run(PROMPT));
-    expect(outcome).toEqual({ ok: true, answer: ANSWER });
+    expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
 
     const [id] = archiveIds();
     expect(readArchive(id)["stderr.log"]).toBe("boom\r\n");
@@ -441,7 +443,7 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     };
 
     const outcome = await drive(newRunner(undefined, broken).run(PROMPT));
-    expect(outcome).toEqual({ ok: true, answer: ANSWER });
+    expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
 
     const ids = archiveIds();
     expect(ids).toHaveLength(1);
@@ -452,5 +454,103 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     const meta = JSON.parse(files["meta.json"]) as ArchiveMeta;
     expect(meta.verdict).toBeNull();
     expect(phaseNames(meta)).toEqual(["submitting", "working", "settling", "done"]);
+  });
+
+  // -- Observation hooks for the async surface (#20 slice 1) -------------------
+
+  test("onPhase fires submitting, working, settling in order and never after the run resolves", async () => {
+    const seen: TurnPhase[] = [];
+    scripted.afterPaste = ackAndEnd;
+    const runner = newRunner(undefined, scripted, {
+      onPhase: (phase) => {
+        seen.push(phase);
+      },
+    });
+
+    const outcome = await drive(runner.run(PROMPT));
+    expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
+    expect(seen).toEqual(["submitting", "working", "settling"]);
+  });
+
+  test("a throwing onPhase observer is contained: the run still settles ok", async () => {
+    scripted.afterPaste = ackAndEnd;
+    const runner = newRunner(undefined, scripted, {
+      onPhase: () => {
+        throw new Error("observer boom");
+      },
+    });
+
+    const outcome = await drive(runner.run(PROMPT));
+    expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  test("taskId names the archive directory; without it an id is generated", async () => {
+    scripted.afterPaste = ackAndEnd;
+    const pinned = newRunner(undefined, scripted, { taskId: "task-20-slice-1" });
+
+    const outcome = await drive(pinned.run(PROMPT));
+    expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
+    expect(archiveIds()).toEqual(["task-20-slice-1"]);
+    const meta = JSON.parse(readArchive("task-20-slice-1")["meta.json"]) as ArchiveMeta;
+    expect(meta.id).toBe("task-20-slice-1");
+
+    // A runner without taskId keeps the generated-id behaviour.
+    scripted.settle = { ok: true, state: "ready" };
+    scripted.events = [];
+    await drive(newRunner(undefined, scripted).run(PROMPT));
+    const ids = archiveIds();
+    expect(ids).toHaveLength(2);
+    expect(ids).toContain("task-20-slice-1");
+  });
+
+  test("archivePath rides the outcome on success and on no_answer when the archive wrote", async () => {
+    scripted.afterPaste = ackAndEnd;
+    const runner = newRunner();
+
+    const ok = await drive(runner.run(PROMPT));
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.archivePath).toBe(join(pluginDir, "tasks", archiveIds()[0]));
+      expect(existsSync(ok.archivePath!)).toBe(true);
+    }
+
+    scripted.settle = { ok: true, state: "ready" };
+    scripted.events = [];
+    scripted.afterPaste = () => {
+      scripted.ack(PROMPT);
+      scripted.endTurn(null);
+    };
+    const failed = await drive(runner.run(PROMPT));
+    expect(failed.ok).toBe(false);
+    if (!failed.ok) {
+      expect(failed.verdict).toBe("no_answer");
+      expect(failed.archivePath).toBe(join(pluginDir, "tasks", archiveIds().at(-1)!));
+      expect(existsSync(failed.archivePath!)).toBe(true);
+    }
+  });
+
+  test("instancePid and screenText expose the held driver, null before any run", async () => {
+    const runner = newRunner();
+    expect(runner.instancePid()).toBeNull();
+    expect(await runner.screenText()).toBeNull();
+
+    scripted.screen = "held frame";
+    let pidMidRun: number | null | undefined;
+    let screenMidRun: string | null | undefined;
+    scripted.afterPaste = () => {
+      pidMidRun = runner.instancePid();
+      void runner.screenText().then((text) => {
+        screenMidRun = text;
+      });
+      ackAndEnd();
+    };
+
+    await drive(runner.run(PROMPT));
+    expect(pidMidRun).toBe(4242);
+    expect(screenMidRun).toBe("held frame");
+    // The instance is kept for reuse after a successful settle.
+    expect(runner.instancePid()).toBe(4242);
+    expect(await runner.screenText()).toBe("held frame");
   });
 });
