@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { LockBusyError, writeLock } from "../src/lock";
+import { LockBusyError, readLock, writeLock } from "../src/lock";
 import { FreebuffDriverError } from "../src/driver";
 import { COUNTDOWN_REGEX, END_SESSION } from "../src/protocol/markers";
 import { classifyScreen } from "../src/protocol/screen";
@@ -63,7 +63,7 @@ const lockPath = () => join(pluginDir, "lock.json");
 const newRunner = (
   lockDeps?: { isPidAlive?: (pid: number) => boolean; deadlineMs?: number },
   driver: ScriptedDriver = scripted,
-  extra?: Pick<TurnRunnerOptions, "taskId" | "onPhase" | "watchdog" | "createDriver">,
+  extra?: Pick<TurnRunnerOptions, "taskId" | "onPhase" | "watchdog" | "createDriver" | "lockKind">,
 ): TurnRunner =>
   new TurnRunner({
     pluginDir,
@@ -151,6 +151,25 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
     expect(existsSync(lockPath())).toBe(false);
     expect(scripted.isAlive).toBe(true);
+  });
+
+  test("lockKind keeper claims the record as kind keeper before the driver exists", async () => {
+    const kindsSeenInFactory: (string | undefined)[] = [];
+    const runner = newRunner(undefined, scripted, {
+      lockKind: "keeper",
+      createDriver: async () => {
+        kindsSeenInFactory.push(readLock(pluginDir)?.kind);
+        created++;
+        scripted.started();
+        return scripted;
+      },
+    });
+    scripted.afterPaste = ackAndEnd;
+
+    const outcome = await drive(runner.run(PROMPT));
+    expect(outcome).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
+    expect(kindsSeenInFactory).toEqual(["keeper"]);
+    expect(existsSync(lockPath())).toBe(false);
   });
 
   test("no ack signals: exactly two pastes, then ack_missing, instance killed, lock gone", async () => {

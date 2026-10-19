@@ -112,6 +112,34 @@ byte-identical text — with the shape `{level: "pass" | "degraded" | "fail",
 checks: [{name, status, detail}], lines, text}`, and is delivered as an aside
 message.
 
+## Keeper
+
+A standalone scheduled script (ADR-0002 — not an in-extension daemon) that
+keeps freebuff's Hour-session login streak alive: one small read-only Task a
+day. Register it once, by hand:
+
+```
+powershell -File scripts\register-keeper-task.ps1
+```
+
+The task fires daily at 21:00 local (18:00 UTC on TRT); the allowance itself
+resets at 21:00 UTC. `-StartWhenAvailable` fires a missed slot on the next
+boot. `-Unregister` removes the task; `-WhatIf` dry-runs the registration.
+
+Each run (`scripts/keeper.ts`) probes before it touches anything: a chat dir
+or a Task archive started at or after 21:00 UTC means the day already had
+activity, and a live freebuff Instance from freebuff's own per-pid records
+means the slot is taken — the run exits without spawning. Otherwise it takes
+the Lock with kind `keeper`, points the Workspace's `repo` junction at the
+Target, drives ONE read-only Task ("In one sentence, what does README.md do?
+Read only — do not edit anything."), then kills only the Instance it started.
+A Lock held past the claim deadline skips the run (never stolen); Abandoned
+Tasks are reported in the log, never resumed.
+
+`PI_FREEBUFF_KEEPER_JSON` overrides the run — the same JSON shape as
+`PI_FREEBUFF_RUNNER_JSON` plus `target`, e.g. to point a manual run at a test
+rig. Progress lines tee to the console and to `keeper.log` in the repo root.
+
 ## Verdicts and errors
 
 Every Task ends under exactly one Verdict, a closed set of nine:
@@ -173,6 +201,12 @@ per freeze key, write-only.
   table, markers.
 - `src/host/pty.ts` — the only host-internals seam (`@oh-my-pi/pi-natives`,
   `@oh-my-pi/pi-utils/vterm`); enforced by `tests/hostSeam.test.ts`.
+- `src/keeper.ts` — the Keeper core: activity window, probe, one keeper Task.
+- `scripts/keeper.ts` — the headless Keeper entry the scheduled task runs;
+  `PI_FREEBUFF_KEEPER_JSON` config, log to `keeper.log` in the repo root.
+- `scripts/register-keeper-task.ps1` — registers the daily 21:00 Task
+  Scheduler entry (bun + `scripts\keeper.ts`); `-Unregister` removes it,
+  `-WhatIf` dry-runs.
 - `skills/freebuff/SKILL.md` — the bundled skill the host loads on demand.
 - `tests/` — unit tests per module, corpus tests over the recorded screen
   fixtures, the host-seam policy guard, stub end-to-end tests over

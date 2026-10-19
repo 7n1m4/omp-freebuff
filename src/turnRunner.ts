@@ -16,7 +16,7 @@ import {
   type DriverOptions,
   type DriverTimings,
 } from "./driver";
-import { withLock, type LockDeps } from "./lock";
+import { withLock, type LockDeps, type LockKind } from "./lock";
 import { COUNTDOWN_REGEX, END_SESSION } from "./protocol/markers";
 import { classifyScreen, errorLines, EXCERPT_LINES, freezeKey, screenExcerpt } from "./protocol/screen";
 import { partialAnswer as partialAnswerOf, type TurnBaseline } from "./protocol/chatStore";
@@ -101,6 +101,8 @@ export interface TurnRunnerOptions {
   clock?: Clock;
   /** Liveness knobs for the Lock, plus the claim deadline; now/sleep/poll come from clock/timings. */
   lockDeps?: Pick<LockDeps, "isPidAlive" | "killPid" | "hasLiveTask" | "deadlineMs">;
+  /** The kind written into the Lock record; the scheduled Keeper claims "keeper" (ADR-0002), everything else "extension". */
+  lockKind?: LockKind;
   /** Returns a STARTED driver. Defaults to a real FreebuffDriver on command/env/timings/clock. */
   createDriver?: () => Promise<DriverLike>;
   /** Submit-time Task id; pins the archive directory name instead of a generated stamp. */
@@ -187,7 +189,7 @@ export class TurnRunner {
     try {
       return await withLock(
         this.options.pluginDir,
-        "extension",
+        this.options.lockKind ?? "extension",
         {
           now: () => this.clock.now(),
           sleep: (ms) => this.sleep(ms),
