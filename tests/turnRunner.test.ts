@@ -311,6 +311,26 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     expect(existsSync(lockPath())).toBe(false);
   });
 
+  test("slot_held names the holder the per-pid record carries; no record keeps the plain wording", async () => {
+    const cfg = join(pluginDir, "cfg");
+    mkdirSync(cfg, { recursive: true });
+    writeFileSync(join(cfg, `freebuff-live-${process.pid}.json`), JSON.stringify({
+      ownerPid: process.pid,
+      model: "fbm1.holder-model",
+      expiresAt: Date.now() + 60_000,
+    }));
+    scripted.settle = { ok: false, reason: "slot_held", excerpt: "held frame" };
+
+    const named = await drive(newRunner().run(PROMPT));
+    expect(!named.ok && named.message).toBe(
+      `the Hour slot is held by another window: pid ${process.pid} (fbm1.holder-model)`,
+    );
+
+    rmSync(join(cfg, `freebuff-live-${process.pid}.json`));
+    const plain = await drive(newRunner().run(PROMPT));
+    expect(!plain.ok && plain.message).toBe("the Hour slot is held by another window");
+  });
+
   test("lock held by a live foreign owner: LockBusyError propagates and nothing spawns", async () => {
     writeLock(pluginDir, {
       ownerPid: 999_999_999,

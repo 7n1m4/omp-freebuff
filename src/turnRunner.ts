@@ -21,6 +21,7 @@ import { COUNTDOWN_REGEX, END_SESSION } from "./protocol/markers";
 import { classifyScreen, errorLines, EXCERPT_LINES, freezeKey, screenExcerpt } from "./protocol/screen";
 import { partialAnswer as partialAnswerOf, type TurnBaseline } from "./protocol/chatStore";
 import { enterWhitelisted } from "./protocol/whitelist";
+import { readForeignHolders } from "./status";
 import { readJunctionTarget } from "./workspace";
 
 // The nine-set from CONTEXT. This runner's own paths produce ack_missing,
@@ -317,7 +318,7 @@ export class TurnRunner {
           // outranks the settle failure it caused.
           outcome = this.cancelledOutcome(baseline);
         } else if (settled.reason === "slot_held") {
-          outcome = { ok: false, verdict: "slot_held", message: "the Hour slot is held by another window", screenExcerpt: excerpt };
+          outcome = { ok: false, verdict: "slot_held", message: this.slotHeldMessage(), screenExcerpt: excerpt };
         } else if (settled.reason === "displaced") {
           outcome = { ok: false, verdict: "displaced", message: "the Instance was displaced; no keystrokes sent", screenExcerpt: excerpt };
         } else {
@@ -427,6 +428,20 @@ export class TurnRunner {
       this.dropDriver();
       return outcome;
     }
+  }
+
+  // Story 42: the slot_held failure names the holder freebuff's own per-pid
+  // record carries; with no live record naming one, the plain wording stands.
+  private slotHeldMessage(): string {
+    try {
+      const holder = readForeignHolders(this.options.freebuffConfigDir).live[0];
+      if (holder !== undefined) {
+        return `the Hour slot is held by another window: pid ${holder.pid} (${holder.model})`;
+      }
+    } catch {
+      // Contained: the base wording is the degrade path.
+    }
+    return "the Hour slot is held by another window";
   }
 
   // The working phase's poll loop as pure observation: it returns the Turn's own
