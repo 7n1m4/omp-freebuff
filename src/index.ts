@@ -145,10 +145,16 @@ const statusText = (status: StatusResult & { queue: { depth: number }; activeTas
   const parts = [
     `lock ${status.lock.state}`,
     `instance ${status.instancePid ?? "none"}`,
+    ...(status.target !== undefined ? [`target ${status.target}`] : []),
     ...(status.hourMinutesLeft !== undefined ? [`hour ${status.hourMinutesLeft}m left`] : []),
+    ...(status.foreign.live.length > 0
+      ? [`foreign ${status.foreign.live.map((holder) => `pid ${holder.pid} (${holder.model})`).join(", ")}`]
+      : []),
     `queue ${status.queue.depth}`,
     status.activeTask === null ? "no active task" : `active ${status.activeTask.taskId} (${status.activeTask.phase})`,
-    `archive ${status.archive.count} ${status.archive.count === 1 ? "task" : "tasks"}`,
+    `archive ${status.archive.count} ${status.archive.count === 1 ? "task" : "tasks"} (${status.archive.totalBytes} bytes${
+      status.archive.newestId === undefined ? "" : `, newest ${status.archive.newestId}`
+    })`,
     ...(status.abandoned.length > 0 ? [`abandoned ${status.abandoned.length}`] : []),
     ...(status.screenDrift ? ["screen drift"] : []),
   ];
@@ -209,8 +215,12 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
     execute: async (_toolCallId, { prompt }, signal, _onUpdate, ctx) => {
       const singleton = singletonOf();
       const binding = bindingFor(pi, ctx);
-      // The user stopping the parent's turn aborts this signal (#22): the
-      // singleton decides detach (working) vs cancel (queued/submitting).
+      // The user stopping the parent's turn aborts this turn signal (#22): the
+      // singleton decides detach (working) vs cancel (queued/submitting). The
+      // listener outlives this call on purpose: a queued Task's call returns
+      // at once and a working Task's at the Ack, and both must still see the
+      // stop. interrupt() is a no-op once the Task is no longer in flight, so
+      // a late fire cannot hurt a settled Task.
       const onAbort = () => {
         try {
           singleton.interrupt(binding, signal?.reason);
@@ -228,8 +238,6 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
         return { content: [{ type: "text", text: runText(ok) }], details: ok };
       } catch (error) {
         return errorResult(error);
-      } finally {
-        signal?.removeEventListener("abort", onAbort);
       }
     },
   });
