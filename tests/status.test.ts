@@ -1,4 +1,4 @@
-// Ticket #17 slice 3: freebuff_status (ADR-0001 §5). Proves AC #6 (Lock state,
+// Ticket #17 slice 3: freebuff_status (ADR-0001). Proves AC #6 (Lock state,
 // Instance pid, Target, foreign live holders, with dead/expired/malformed/own
 // records filtered) and AC #7 (nothing this owner did not start is ever killed).
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
