@@ -41,7 +41,7 @@ test("reclaim kills the recorded instance and deletes the record (AC #5)", async
       startedAt: new Date(Date.now() - 31 * 60 * 1000).toISOString(),
     });
 
-    await reclaimLock(pluginDir); // real pidAlive + killInstance (taskkill)
+    await reclaimLock(pluginDir); // real pidAlive + killInstance (SIGTERM/SIGKILL)
 
     let threw: unknown;
     try {

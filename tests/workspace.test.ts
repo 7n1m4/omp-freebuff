@@ -31,7 +31,10 @@ const makeGitRepo = (): string => {
 };
 
 describe("defaultPluginDir / workspaceDir", () => {
-  test("plugin dir lives under %LOCALAPPDATA%, workspace is its freebuff-ws child (AC #1)", () => {
+  test("plugin dir lives under the XDG state home, workspace is its freebuff-ws child (AC #1)", () => {
+    // Path only: the exact home is the platform's business, proved in
+    // tests/platform.test.ts. Here only the shape matters, and the test must
+    // never touch the real machine-wide plugin directory.
     expect(defaultPluginDir()).toMatch(/freebuff-plugin$/);
     expect(workspaceDir(join(root, "plugin"))).toBe(join(root, "plugin", "freebuff-ws"));
   });

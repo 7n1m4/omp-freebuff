@@ -12,7 +12,9 @@ The extension must load from the live checkout, so edits need no build step, whi
 
 ## Decision
 
-The repo root is the package. `package.json#omp.extensions` declares the entry (`["./src/index.ts"]`), which keeps tests, probes and `node_modules` out of the extension graph. `~/.omp/agent/extensions/pi-freebuff` is a Windows junction to the checkout, created once by hand. Reloading means restarting OMP: there is no hot reload, and the `?mtime` cache-buster is ignored on Windows.
+The repo root is the package. `package.json#omp.extensions` declares the entry (`["./src/index.ts"]`), which keeps tests, probes and `node_modules` out of the extension graph. `~/.omp/agent/extensions/pi-freebuff` is a symlink to the checkout, created once by hand. Reloading means restarting OMP: there is no hot reload, and a cache-buster is not relied on.
+
+The link is a directory **symlink** on Linux (`ln -s`) and a Windows **junction** (`mklink /J`) on Windows; the repo's Workspace code does the same branch in `src/workspace.ts`, keyed on the platform. Neither form requires admin rights, and removing one deletes only the link, never the checkout.
 
 ## Considered options
 
@@ -22,5 +24,5 @@ The repo root is the package. `package.json#omp.extensions` declares the entry (
 ## Consequences
 
 - Deleting the checkout breaks the load.
-- Junction creation is a one-time manual setup, documented in AGENTS.md.
+- Link creation is a one-time manual setup, documented in AGENTS.md.
 - Every reload costs an OMP restart.

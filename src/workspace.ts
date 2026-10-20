@@ -3,14 +3,15 @@
 // durable and machine-wide rather than per-session.
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, readlinkSync, statSync, symlinkSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, parse, relative, resolve } from "node:path";
+import { isWindows, pluginDir } from "./platform";
 
 export const JUNCTION_NAME = "repo";
 
 // Path-only seam: no fs access here, so tests can inject directories instead.
+// XDG_STATE_HOME wins on Linux; LOCALAPPDATA is consulted only on Windows.
 export function defaultPluginDir(): string {
-  return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "freebuff-plugin");
+  return pluginDir();
 }
 
 // Durable, constant, never session-derived; its basename is freebuff's chat-store key.
@@ -49,9 +50,15 @@ export function resolveTarget(cwd: string): string {
   }
 }
 
-// readlink on a junction yields \\?\C:\... and git may return any casing or slash
-// style; compare every path through one normalized, case-insensitive key.
-const pathKey = (p: string): string => resolve(p.replace(/^\\\\\?\\/, "")).toLowerCase();
+// readlink on a Windows junction yields \\?\C:\... and git may return any casing
+// or slash style; compare every path through one normalized key. The key is
+// case-insensitive only on Windows: on a case-sensitive Linux filesystem two
+// Targets differing in case are two different directories, and folding them
+// together would leave a stale link reported as correct.
+const pathKey = (p: string): string => {
+  const resolved = resolve(p.replace(/^\\\\\?\\/, ""));
+  return isWindows ? resolved.toLowerCase() : resolved;
+};
 
 // A Target must never mount a whole drive, the Workspace itself, or an ancestor of
 // the Workspace: repo would then contain its own parent and loop directory walks.
@@ -72,10 +79,11 @@ export function assertSafeTarget(target: string, workspace: string): void {
   if (rel === "" || !rel.startsWith("..")) throw new Error(`unsafe target: ${resolved} contains the Workspace`);
 }
 
-// Points <workspace>/repo at target, creating the workspace when needed. Windows
-// junctions need no admin rights, and removing one deletes only the link, never the
-// target. Idempotent: an existing junction already on target is left alone, so every
-// claim can call this as a self-heal.
+// Points <workspace>/repo at target, creating the workspace when needed. A real
+// POSIX symlink on Linux; a Windows junction on Windows — neither needs admin
+// rights, and removing one deletes only the link, never the target. Idempotent:
+// an existing link already on target is left alone, so every claim can call this
+// as a self-heal.
 export function ensureJunction(workspace: string, target: string): void {
   mkdirSync(workspace, { recursive: true });
   const junction = join(workspace, JUNCTION_NAME);
@@ -83,7 +91,7 @@ export function ensureJunction(workspace: string, target: string): void {
   try {
     if (pathKey(readlinkSync(junction)) === pathKey(wanted)) return;
   } catch {
-    // No junction yet: create it below.
+    // No link yet: create it below.
   }
   // A real directory named `repo` must fail loudly here; recursive removal over
   // this path would delete its contents instead of just the link.
@@ -93,5 +101,5 @@ export function ensureJunction(workspace: string, target: string): void {
   }
   // unlinkSync, not rmSync: Bun's rmSync faults (EFAULT) on junctions.
   if (existing !== undefined) unlinkSync(junction);
-  symlinkSync(wanted, junction, "junction");
+  symlinkSync(wanted, junction, isWindows ? "junction" : "dir");
 }

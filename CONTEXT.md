@@ -36,7 +36,9 @@ changes. Grows as wayfinder tickets resolve.
 ### Ownership
 
 - **Lock**: the machine-wide record at
-  `%LOCALAPPDATA%\freebuff-plugin\lock.json` — the right to drive the Instance.
+  `<pluginDir>/lock.json` (`$XDG_STATE_HOME/freebuff-plugin/lock.json` on
+  Linux, `%LOCALAPPDATA%\freebuff-plugin\lock.json` on Windows) — the right to
+  drive the Instance.
   It is **turn-scoped**: taken before a Task's spawn, deleted when the Task
   yields its result, on every exit path. It does not track the Instance's
   lifetime. _Avoid:_ "mutex", "pid lock", "supervisor lock" (the prototype's
@@ -56,11 +58,15 @@ changes. Grows as wayfinder tickets resolve.
 ### Work
 
 - **Workspace**: the fixed directory the Instance always runs in,
-  `%LOCALAPPDATA%\freebuff-plugin\freebuff-ws`. One per machine, durable, never
+  `<pluginDir>/freebuff-ws` (`$XDG_STATE_HOME/freebuff-plugin/freebuff-ws` on
+  Linux, `%LOCALAPPDATA%\freebuff-plugin\freebuff-ws` on Windows). One per
+  machine, durable, never
   session-derived; its basename is freebuff's chat-store key. It is the
   Instance's stable cwd, not the Hour session's identity.
-- **Plugin directory**: `%LOCALAPPDATA%\freebuff-plugin\` — the Lock, the error
-  log, the Task archive, and the Workspace. Screen dumps live under freebuff's
+- **Plugin directory**: `<pluginDir>/` — the Lock, the error
+  log, the Task archive, and the Workspace. XDG-first on Linux (`XDG_STATE_HOME`
+  when set, else `~/.local/state/freebuff-plugin`); `LOCALAPPDATA` only on
+  Windows. Screen dumps live under freebuff's
   config dir (`~/.config/manicode/screen-dumps/<version>/`), not here.
 - **Junction**: the `repo` link inside the Workspace, pointing at the Target
   directory. Swapped only while no Task runs.

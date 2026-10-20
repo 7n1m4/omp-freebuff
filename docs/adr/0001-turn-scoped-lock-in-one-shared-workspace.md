@@ -25,7 +25,7 @@ Two facts shape the rest:
 
 ### 1. The Lock: a machine-wide record, turn-scoped
 
-`%LOCALAPPDATA%\freebuff-plugin\lock.json`:
+`<pluginDir>/lock.json` (`$XDG_STATE_HOME/freebuff-plugin/lock.json` on Linux, `%LOCALAPPDATA%\freebuff-plugin\lock.json` on Windows):
 
 ```json
 { "ownerPid": 12345, "instancePid": 23456, "kind": "extension", "startedAt": "2026-10-18T18:00:00.000Z" }
@@ -40,19 +40,21 @@ Two facts shape the rest:
 ### 2. Contention: wait, then reclaim
 
 - A claimer polls the record (~100 ms) until it is free, up to its own Task deadline, then reports `busy` naming the holder. It never refuses first, and never silently takes over a running Turn.
-- Free record + live `instancePid` = an **orphan instance**. The claimer **reclaims** it: `taskkill /PID <instancePid> /T /F`, delete the record, re-point the junction at its own target, spawn in the same Workspace. Nothing is lost — `/new` precedes every Task, and the Hour resumes from the config-dir record.
+- Free record + live `instancePid` = an **orphan instance**. The claimer **reclaims** it: terminate the Instance, wait until its pid is genuinely gone, delete the record, re-point the junction at its own target, spawn in the same Workspace. Nothing is lost — `/new` precedes every Task, and the Hour resumes from the config-dir record.
+  - Linux: `killPid` sends `SIGTERM`, escalates to `SIGKILL` after a bounded grace, then the reclaim polls until the pid is gone. The wait is what makes the reclaim safe — a record deleted while its Instance still lives is an orphan nobody can drive.
+  - Windows: `taskkill /PID <instancePid> /T /F`, which also takes the child tree.
 - The Lock is re-taken **per Task** as the in-session queue drains, so a second OMP window can interleave between queued Tasks. Holding it while the queue drains trades that fairness for one fewer respawn per handoff.
 - **Yield**: an Owner whose Instance dies unexpectedly releases the Lock and does **not** respawn; the next `freebuff_run` spawns. Without this rule two sessions respawn into each other forever. Freeze, deadline and crash all end in kill + release + lazy respawn, which diverges from the prototype's respawn-immediately watchdog (its ADR-0001 §7).
 
 ### 3. Session end
 
-Kill the Instance on `session_shutdown`. OMP gives a shutdown handler 2 s (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`), which `taskkill` fits; a hard kill runs no JS at all and leaves an orphan, which is the reclaim path's job. The Instance is never left running at session end: it would hold the account's slot and the Workspace with nobody able to drive it.
+Kill the Instance on `session_shutdown`. OMP gives a shutdown handler 2 s (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`), which a signal kill (SIGTERM with a bounded SIGKILL escalation, or `taskkill`) fits; a hard kill runs no JS at all and leaves an orphan, which is the reclaim path's job. The Instance is never left running at session end: it would hold the account's slot and the Workspace with nobody able to drive it.
 
 ### 4. Workspace and junction
 
-- **Workspace** = `%LOCALAPPDATA%\freebuff-plugin\freebuff-ws`: durable, constant, machine-wide, never session-derived. Its basename is freebuff's chat-store key (`projects\<basename>\chats\`), hence a distinctive name rather than `ws`. `%TEMP%` is *safe* now that the Hour is known not to be directory-keyed; it is rejected because the Workspace is where freebuff's per-directory state and chat history live, and cleanup surprises cost more than a temp path saves.
+- **Workspace** = `<pluginDir>/freebuff-ws` (`$XDG_STATE_HOME/freebuff-plugin/freebuff-ws` on Linux, `%LOCALAPPDATA%\freebuff-plugin\freebuff-ws` on Windows): durable, constant, machine-wide, never session-derived. Its basename is freebuff's chat-store key, hence a distinctive name rather than `ws`. `/tmp` is *safe* now that the Hour is known not to be directory-keyed; it is rejected because the Workspace is where freebuff's per-directory state and chat history live, and cleanup surprises cost more than a temp path saves.
 - **Target directory** = the OMP session's cwd resolved to its **git root** (`git rev-parse --show-toplevel`, falling back to the raw cwd when there is no work tree), so freebuff's "you started in a subdirectory of a git repo" rebind never fires and the Instance never leaves `repo/`. `assertSafeTarget` ports as-is: filesystem roots, the Workspace and its ancestors stay refused.
-- **Plugin directory** `%LOCALAPPDATA%\freebuff-plugin\`: the Lock, `errors.jsonl`, screen dumps, and the Workspace.
+- **Plugin directory** `<pluginDir>/`: the Lock, `errors.jsonl`, screen dumps, and the Workspace. XDG-first on Linux — `XDG_STATE_HOME` when set, else `~/.local/state/freebuff-plugin`; `LOCALAPPDATA` is consulted only on Windows.
 
 ### 5. What the extension reports
 

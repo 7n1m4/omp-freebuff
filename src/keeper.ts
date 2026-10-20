@@ -14,7 +14,7 @@ import { TurnRunner, type TurnRunnerOptions, type Verdict } from "./turnRunner";
 import { defaultPluginDir, ensureJunction, resolveTarget, workspaceDir } from "./workspace";
 
 export interface KeeperOptions {
-  /** lock.json and tasks/ home; defaults to %LOCALAPPDATA%\freebuff-plugin. */
+  /** lock.json and tasks/ home; defaults to the XDG state home's freebuff-plugin. */
   pluginDir?: string;
   /** Chat-store root probed for activity; defaults to ~/.config/manicode. */
   freebuffConfigDir?: string;

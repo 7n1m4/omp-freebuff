@@ -266,9 +266,25 @@ describe("runKeeper (real stub child, injected dirs)", () => {
   );
 });
 
-// AC6: the registration script is asserted statically; no test executes it.
+// AC6: the registration scripts are asserted statically; no test executes one,
+// because registering a schedule mutates machine state outside the repo. Each
+// platform keeps its own registration: the Linux runtime's systemd timer, the
+// Windows Task Scheduler entry.
 describe("registration script (static)", () => {
-  test("registers bun scripts\\keeper.ts daily 21:00 with StartWhenAvailable and a WhatIf guard", () => {
+  test("the Linux script registers a daily 21:00 systemd timer with Persistent= and bun scripts/keeper.ts", () => {
+    const text = readFileSync(join(import.meta.dir, "..", "scripts", "register-keeper-task.sh"), "utf8");
+    expect(text).toContain("#!/usr/bin/env bash");
+    // The Linux start-when-available equivalent: a slot missed while the machine
+    // was down fires on the next boot.
+    expect(text).toContain("Persistent=true");
+    expect(text).toContain("OnCalendar=*-*-* 21:00:00");
+    expect(text).toContain("scripts/keeper.ts");
+    expect(text).toContain("--unregister");
+    expect(text).toContain("--dry-run");
+    expect(text).toContain("systemctl --user enable --now");
+  });
+
+  test("the Windows script registers bun scripts\\keeper.ts daily 21:00 with StartWhenAvailable and a WhatIf guard", () => {
     const text = readFileSync(join(import.meta.dir, "..", "scripts", "register-keeper-task.ps1"), "utf8");
     expect(text).toContain("-Execute 'bun.exe'");
     expect(text).toContain("-Argument 'scripts\\keeper.ts'");

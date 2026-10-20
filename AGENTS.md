@@ -19,5 +19,6 @@ Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agent
 - Setup: `bun install`.
 - Test: `bun test` — the only runner (no vitest, no node-pty, no @xterm/headless).
 - Typecheck: `bun run typecheck`.
-- Install shape: `cmd /c mklink /J "%USERPROFILE%\.omp\agent\extensions\pi-freebuff" <checkout-path>`; reload = OMP restart (see ADR-0005).
+- Install shape: `ln -s <checkout-path> ~/.omp/agent/extensions/pi-freebuff`; reload = OMP restart (see ADR-0005).
+- Platforms: Linux is the runtime (POSIX symlink Junction, POSIX signal termination, XDG plugin directory). Windows remains working where the branch is cheap; `src/platform.ts` is the only place the tree branches on the OS.
 - Host seam: `src/host/pty.ts` is the only module importing host internals (`@oh-my-pi/pi-natives`, `@oh-my-pi/pi-utils/vterm`); `tests/hostSeam.test.ts` enforces this.

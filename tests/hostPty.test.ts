@@ -3,7 +3,7 @@ import { PtySession, Terminal } from "../src/host/pty";
 
 describe("host PTY seam", () => {
   test(
-    "spawns cmd.exe on a real PTY and renders its screen through the host terminal",
+    "spawns a real POSIX shell on a real PTY and renders its screen through the host terminal",
     async () => {
       const pty = new PtySession();
       const terminal = new Terminal({
@@ -14,7 +14,7 @@ describe("host PTY seam", () => {
         disableStdin: true,
       });
       const result = await pty.startArgv(
-        { application: "cmd.exe", args: ["/c", "ver"], cols: 120, rows: 40 },
+        { application: "sh", args: ["-c", "printf POSIX-PTY-OK\\r\\n"], cols: 120, rows: 40 },
         (error, chunk) => {
           if (error === null) terminal.write(chunk);
         },
@@ -32,11 +32,11 @@ describe("host PTY seam", () => {
         return rows.join("\n");
       };
       let screen = renderedScreen();
-      for (let poll = 0; !/Microsoft Windows \[Version/.test(screen) && poll < 100; poll++) {
+      for (let poll = 0; !/POSIX-PTY-OK/.test(screen) && poll < 100; poll++) {
         await new Promise<void>((resolve) => setTimeout(resolve, 25));
         screen = renderedScreen();
       }
-      expect(screen).toMatch(/Microsoft Windows \[Version/);
+      expect(screen).toMatch(/POSIX-PTY-OK/);
     },
     30_000,
   );
@@ -45,7 +45,10 @@ describe("host PTY seam", () => {
     "write and kill after the child exits throw the native not-running error",
     async () => {
       const pty = new PtySession();
-      const result = await pty.startArgv({ application: "cmd.exe", args: ["/c", "ver"], cols: 120, rows: 40 }, () => {});
+      const result = await pty.startArgv(
+        { application: "sh", args: ["-c", "printf POSIX-PTY-EXIT\\r\\n"], cols: 120, rows: 40 },
+        () => {},
+      );
       expect(result.cancelled).toBe(false);
       // The native teardown frees the session slightly after the run promise
       // resolves; the driver maps the thrown wording to process_exited, so the
@@ -63,7 +66,7 @@ describe("host PTY seam", () => {
         }
         return null;
       };
-      expect(await thrownMessage(() => pty.write("dir\r"))).toBe("PTY session is not running");
+      expect(await thrownMessage(() => pty.write("echo written\r"))).toBe("PTY session is not running");
       expect(await thrownMessage(() => pty.kill())).toBe("PTY session is not running");
     },
     30_000,

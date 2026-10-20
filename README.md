@@ -4,7 +4,9 @@ An in-process [OMP](https://omp.sh) extension that drives the freebuff CLI's
 terminal UI through a PTY. It runs one machine-wide freebuff Instance in one
 shared Workspace and exposes five tools, all `loadMode: "essential"`. It is the
 in-process replacement for the freebuff-supervisor MCP server/daemon: no
-daemon, no named pipe, no process of its own. Windows-only.
+daemon, no named pipe, no process of its own. Linux is the runtime; the
+platform-specific pieces (the Junction, Instance termination, the plugin
+directory) are centralised in `src/platform.ts`.
 
 The domain language (Instance, Lock, Phase, Verdict, Owner session, Detached
 Task, ...) is defined in [CONTEXT.md](CONTEXT.md); this README uses those words
@@ -16,21 +18,23 @@ The repo checkout is the extension package (ADR-0005): `package.json` declares
 `omp.extensions: ["./src/index.ts"]`, and OMP loads the extension straight from
 the source tree — no build step.
 
-1. Create the junction OMP discovers extensions in, once, by hand:
+1. Create the link OMP discovers extensions in, once, by hand:
 
    ```
-   cmd /c mklink /J "%USERPROFILE%\.omp\agent\extensions\pi-freebuff" <checkout-path>
+   ln -s <checkout-path> ~/.omp/agent/extensions/pi-freebuff
    ```
+
+   (On Windows the same step is `cmd /c mklink /J "%USERPROFILE%\.omp\agent\extensions\pi-freebuff" <checkout-path>` — a junction instead of a symlink; neither needs admin rights.)
 
 2. Register the same directory as an extension root so the bundled skill is
-   discovered. The junction walk loads extension code only; the skill provider
+   discovered. The link walk loads extension code only; the skill provider
    scans `<extension-root>/skills`, so without this step the skill is silently
-   ignored. Add the checkout (or junction) path to the `extensions:` setting in
+   ignored. Add the checkout (or link) path to the `extensions:` setting in
    `~/.omp/config.yml` (or the project config):
 
    ```yaml
    extensions:
-     - C:\projects\_llm\pi-freebuff
+     - /srv/projects/pi-freebuff
    ```
 
    `-e <path>` on the OMP command line works too.
@@ -42,14 +46,15 @@ there is no hot reload.
 
 The old surface is gone as of the 2026-10-20 cutover:
 
-- The `freebuff-supervisor` entry was deleted from
-  `%USERPROFILE%\.omp\agent\mcp.json` (backup: `mcp.json.bak-cutover` next to
-  it). OMP drives freebuff only through this extension.
-- The registered `Freebuff Streak Keeper` scheduled task runs this checkout's
-  `scripts\keeper.ts` under bun, same daily trigger with `-StartWhenAvailable`,
-  working directory the repo root.
-- The prototype repo `C:\projects\_llm\freebuff-mcp` is read-only, kept as the
-  port source; its README points here.
+- The `freebuff-supervisor` entry was deleted from the host's `mcp.json`
+  (backup: `mcp.json.bak-cutover` next to it). OMP drives freebuff only through
+  this extension.
+- The registered `Freebuff Streak Keeper` schedule runs this checkout's
+  `scripts/keeper.ts` under bun, same daily trigger with start-when-available,
+  working directory the repo root. On Linux that schedule is a per-user systemd
+  timer registered by `scripts/register-keeper-task.sh`; on Windows it is the
+  Task Scheduler entry the `register-keeper-task.ps1` registers.
+- The prototype repo that was the port source is read-only and points here.
 
 A session opened before the cutover still mounts the old MCP server from its
 startup config: restart OMP to observe the new surface — there is no hot
@@ -57,8 +62,8 @@ reload.
 
 ## Prerequisites
 
-- Windows (the Workspace junction, `taskkill`, and the PTY host are
-  Windows-specific).
+- Linux (POSIX signal termination, a POSIX symlink Junction, an XDG plugin
+  directory). Windows remains working where the platform branch is cheap.
 - The freebuff CLI, installed and signed in once.
 - [Bun](https://bun.sh) for development (`bun install`, `bun test`,
   `bun run typecheck`).
@@ -133,16 +138,23 @@ message.
 
 A standalone scheduled script (ADR-0002 — not an in-extension daemon) that
 keeps freebuff's Hour-session login streak alive: one small read-only Task a
-day. Register it once, by hand:
+day. Register it once, by hand. On Linux:
 
 ```
-powershell -File scripts\register-keeper-task.ps1
+scripts/register-keeper-task.sh
 ```
 
-The task registers as `Freebuff Streak Keeper` and fires daily at 21:00 local
-(18:00 UTC on TRT); the allowance itself resets at 21:00 UTC.
-`-StartWhenAvailable` fires a missed slot on the next boot. `-Unregister`
-removes the task; `-WhatIf` dry-runs the registration.
+That installs a per-user systemd timer, `freebuff-streak-keeper.timer`, running
+`bun scripts/keeper.ts` with the repo root as working directory. It fires daily
+at 21:00 local (18:00 UTC on TRT); the allowance itself resets at 21:00 UTC.
+`Persistent=true` is the start-when-available equivalent: a slot missed while
+the machine was down fires on the next boot. `--unregister` removes it;
+`--dry-run` prints the two unit files and the `systemctl` commands without
+touching anything. `--help` lists the options.
+
+On Windows the same schedule is a Task Scheduler entry, registered by
+`scripts/register-keeper-task.ps1` (PowerShell, `-Unregister`, `-WhatIf`); it
+performs the identical registration with the platform's own scheduler.
 
 Each run (`scripts/keeper.ts`) probes before it touches anything: a chat dir
 or a Task archive started at or after 21:00 UTC means the day already had
@@ -175,7 +187,8 @@ obedience and one full Task end to end. Run the capture mode when the corpus
 needs new screen dumps — it is the re-measure path for a drifted version.
 
 Both build their rig in temp directories (plugin dir, Workspace, a disposable
-`git init` Target): `%LOCALAPPDATA%\freebuff-plugin\` is never touched. Only
+`git init` Target): the plugin directory (`$XDG_STATE_HOME/freebuff-plugin/`,
+or `%LOCALAPPDATA%\freebuff-plugin\` on Windows) is never touched. Only
 freebuff's own config dir is real — login state, `freebuff-metadata.json`, and
 the capture dumps land there. The Lock is obeyed: with a foreign record held,
 the submit waits out its claim deadline and refuses with a message naming the
@@ -216,7 +229,9 @@ Between submit and settle a Task moves through the Phases: `queued`,
 
 ## On disk
 
-Everything lands in the plugin directory `%LOCALAPPDATA%\freebuff-plugin\`:
+Everything lands in the plugin directory — `$XDG_STATE_HOME/freebuff-plugin/`
+on Linux (`~/.local/state/freebuff-plugin/` when `XDG_STATE_HOME` is unset),
+`%LOCALAPPDATA%\freebuff-plugin\` on Windows:
 
 - `lock.json` — the turn-scoped Lock, `{ownerPid, instancePid, kind, startedAt}`
   (`kind` is `extension` or `keeper`); taken before a Task's spawn, deleted on
@@ -226,9 +241,10 @@ Everything lands in the plugin directory `%LOCALAPPDATA%\freebuff-plugin\`:
   included: `meta.json` (phase log, Verdict, timings, model, target),
   `answer.md` (the full answer), `chat-messages.json`, `screen.txt`, and
   `stderr.log` when non-empty. Never auto-pruned.
-- `freebuff-ws\` — the Workspace, the Instance's fixed working directory, with
-  the `repo` junction pointing at the Target (the session's cwd resolved to its
-  git root).
+- `freebuff-ws/` — the Workspace, the Instance's fixed working directory, with
+  the `repo` Junction pointing at the Target directory (the session's cwd
+  resolved to its git root). A POSIX symlink on Linux, a Windows junction on
+  Windows.
 
 Screen dumps are the one thing outside the plugin directory:
 `~/.config/manicode/screen-dumps/<version>/` — under freebuff's own config dir
@@ -252,6 +268,8 @@ per freeze key, write-only.
 - `src/status.ts` — `freebuff_status` data assembly.
 - `src/archive.ts` — Task archive writes and Abandoned-Task inference.
 - `src/config.ts` — screen geometry (48×160), the size every fixture captures.
+- `src/platform.ts` — the only module that branches on the OS: `isWindows`,
+  `resolveApplication`, `killPid`, `pluginDir`.
 - `src/doctor.ts` — the deterministic doctor core.
 - `src/protocol/` — screen emulator and classifier, screen signatures, chat
   store reader, keystroke whitelist, fixture corpus, recorded classification
@@ -261,9 +279,14 @@ per freeze key, write-only.
 - `src/keeper.ts` — the Keeper core: activity window, probe, one keeper Task.
 - `scripts/keeper.ts` — the headless Keeper entry the scheduled task runs;
   `PI_FREEBUFF_KEEPER_JSON` config, log to `keeper.log` in the repo root.
-- `scripts/register-keeper-task.ps1` — registers the daily 21:00 Task
-  Scheduler entry (bun + `scripts\keeper.ts`); `-Unregister` removes it,
-  `-WhatIf` dry-runs.
+- `scripts/register-keeper-task.sh` — registers the daily 21:00 Keeper schedule
+  on Linux: a per-user systemd timer (`freebuff-streak-keeper.timer`) running
+  `bun scripts/keeper.ts` with the repo root as working directory.
+  `--unregister` removes it, `--dry-run` prints the unit files without writing.
+- `scripts/register-keeper-task.ps1` — the Windows counterpart: the same daily
+  21:00 registration as a Task Scheduler entry (`-Unregister`, `-WhatIf`).
+  Kept because Windows remains supported; the shell script is the Linux
+  runtime's path.
 - `skills/freebuff/SKILL.md` — the bundled skill the host loads on demand.
 - `tests/` — unit tests per module, corpus tests over the recorded screen
   fixtures, the host-seam policy guard, stub end-to-end tests over

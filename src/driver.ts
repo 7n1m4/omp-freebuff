@@ -2,9 +2,8 @@
 // reads through the host vterm, settle via the shared loop, chat-store facts via
 // the shared reader. Single-window primitives only — the ack/re-paste policy and
 // the verdict mapping live in the turn runner above this seam.
-import { statSync } from "node:fs";
-import { join } from "node:path";
 import { PtySession } from "./host/pty";
+import { resolveApplication } from "./platform";
 import { SCREEN_COLS, SCREEN_ROWS } from "./config";
 import { CliTerminalScreen, classifyScreen } from "./protocol/screen";
 import type { ScreenRead } from "./protocol/screen";
@@ -56,41 +55,6 @@ export const DEFAULT_DRIVER_TIMINGS: DriverTimings = {
   pasteSettleMs: 150,
   pressThrottleMs: DEFAULT_PRESS_THROTTLE_MS,
 };
-
-// CreateProcessW runs only real executables: a bare CLI name whose PATH hit is
-// npm's extension-less sh shim dies with os error 193. Resolve a bare name over
-// PATH x PATHEXT (extension-less candidates are skipped: they are sh shims or
-// nothing CreateProcess could run) and return the hit as the application. A
-// .cmd/.bat hit is NOT wrapped in ComSpec ourselves: CreateProcessW detects a
-// batch target and spawns its own `cmd.exe /c` with OS-grade quoting — the only
-// form that survives paths with spaces, because quotes we put into argv reach
-// cmd escaped as \" (probe-verified: ComSpec /s /c splits at the first space;
-// the direct batch target runs the spaced shim and forwards args verbatim).
-export function resolveWindowsCommand(
-  application: string,
-  env: { PATH?: string; PATHEXT?: string } = process.env as {
-    PATH?: string;
-    PATHEXT?: string;
-  },
-): { application: string; args: [] } {
-  if (/[\\/]/.test(application)) return { application, args: [] };
-  const extensions = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";");
-  for (const dir of (env.PATH ?? "").split(";")) {
-    if (dir === "") continue;
-    for (const ext of extensions) {
-      const candidate = join(dir, application + ext.toLowerCase());
-      let stat;
-      try {
-        stat = statSync(candidate);
-      } catch {
-        continue;
-      }
-      if (!stat.isFile()) continue;
-      return { application: candidate, args: [] };
-    }
-  }
-  return { application, args: [] };
-}
 
 export interface DriverDeps {
   now?: () => number;
@@ -174,7 +138,11 @@ export class FreebuffDriver implements DriverLike {
     this.pty = pty;
     this.screen = screen;
     const started = Promise.withResolvers<void>();
-    const command = resolveWindowsCommand(this.options.application);
+    // The PTY host gets a real executable: POSIX resolves a bare name over PATH,
+    // so a name whose hit is an unexecutable file is never what the host sees;
+    // Windows keeps the PATHEXT walk, because CreateProcessW runs no
+    // extension-less sh shim. The branch lives in platform.ts, never inline here.
+    const command = resolveApplication(this.options.application);
     const run = pty.startArgv(
       {
         application: command.application,

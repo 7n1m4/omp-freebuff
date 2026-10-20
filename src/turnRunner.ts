@@ -87,7 +87,7 @@ export type TurnOutcome =
     };
 
 export interface TurnRunnerOptions {
-  /** lock.json home — temp in tests, %LOCALAPPDATA%\freebuff-plugin in production. */
+  /** lock.json home — temp in tests, the XDG state home's freebuff-plugin in production. */
   pluginDir: string;
   /** Spawn cwd for the Instance. */
   workspace: string;

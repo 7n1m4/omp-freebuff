@@ -99,9 +99,10 @@ export async function plantKeeperLock(pluginDir: string): Promise<{ pid: number;
   }
 }
 
-// process.kill(pid, 0) on Windows keeps succeeding for a terminated pid until
-// the last handle to it closes (the PTY host holds one briefly); killInstance
-// waits out the same window after taskkill. Returns the final liveness.
+// A terminated pid can take a moment before `process.kill(pid, 0)` reports it
+// gone — Windows keeps the pid alive until the last handle closes, and the PTY
+// host holds one briefly; on Linux the reap window is shorter but still real.
+// killPid's caller waits out the same window. Returns the final liveness.
 async function awaitPidDead(pid: number, budgetMs = 5_000): Promise<boolean> {
   const deadline = Date.now() + budgetMs;
   while (pidAlive(pid) && Date.now() < deadline) await sleepMs(100);

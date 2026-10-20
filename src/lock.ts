@@ -2,10 +2,9 @@
 // Owner allowed to drive the Instance. Taken before a Task's spawn, deleted when
 // the Task yields, on every exit path. See ADR-0001; the third staleness
 // case (own pid, no live Task) is ADR-0004.
-import { execFile } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { killPid } from "./platform";
 
 export type LockKind = "extension" | "keeper";
 
@@ -57,13 +56,17 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
-// taskkill /T takes the whole child tree; the poll confirms the pid is really
-// gone before any reclaim deletes the record.
+// Terminates the recorded Instance. The waiting that makes a reclaim safe (no
+// record deleted while its Instance still lives) belongs to reclaimLock's poll,
+// which also stays correct when a test injects a killPid that never kills.
+// ESRCH — the pid gone between the caller's check and this signal — is a
+// tolerated no-op: it is the desired end state.
 export async function killInstance(pid: number): Promise<void> {
-  await promisify(execFile)("taskkill", ["/PID", String(pid), "/T", "/F"]).catch(() => {});
-  const deadline = Date.now() + KILL_TIMEOUT_MS;
-  while (pidAlive(pid) && Date.now() < deadline) await realSleep(DEFAULT_POLL_MS);
-  if (pidAlive(pid)) throw new Error(`taskkill failed: pid ${pid} still alive`);
+  try {
+    await killPid(pid);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
 }
 
 export function readLock(pluginDir: string): LockRecord | null {
