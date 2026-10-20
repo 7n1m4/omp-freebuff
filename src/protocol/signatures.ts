@@ -216,12 +216,15 @@ const SIGNATURES: ScreenSignature[] = [
     // present. The footer renders below the composer, so a composer-anchored
     // region would never see it; the plain bottom band covers both. After
     // displaced: without the usage row the frame is displaced whatever the footer
-    // says.
+    // says. The footer only counts while the composer still holds the submitted
+    // text: the ready placeholder means the session settled, whatever the footer
+    // says (a reused Instance after a completed Task renders `Chat: New chat`
+    // beside a live usage row and the placeholder).
     screen: "draft",
     bottomRows: 16,
     threshold: 1,
     markers: [wordMarker("FOOTER_CHAT_NEW", FOOTER_CHAT_NEW, true)],
-    absent: [wordMarker("WELCOME_BOX", WELCOME_BOX, false)],
+    absent: [wordMarker("WELCOME_BOX", WELCOME_BOX, false), wordMarker("READY_PROMPT", READY_PROMPT, false)],
   },
   {
     // Mid-Turn: the composer placeholder is re-labeled. It precedes ready because a

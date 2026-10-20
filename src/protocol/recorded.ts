@@ -85,6 +85,7 @@ export const RECORDED: Record<string, { screen: KnownScreen | null; level: Recog
   "0.2.29/working": { screen: "working", level: "pass" },
   "0.2.29/queued-composer": { screen: "draft", level: "pass" },
   "0.2.29/displaced": { screen: "displaced", level: "pass" },
+  "0.2.29/ready-post-completion": { screen: "ready", level: "pass" },
   "negative/ad-panel": { screen: null, level: "fail" },
   "negative/generic-words": { screen: null, level: "fail" },
   "negative/mid-turn-esc": { screen: null, level: "fail" },

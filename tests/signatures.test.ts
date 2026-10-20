@@ -39,9 +39,19 @@ const workingFrame = [
   usageRow,
   composer("Add to the current task (/ for commands)"),
 ].join("\n");
-const draftFrame = [transcript, statusRow("Chat: New chat · 34m left · 15.2K (1%)"), readyComposer].join("\n");
+// Post-completion frame on a reused Instance: live usage row, the ready composer
+// placeholder, and the footer naming the chat. The placeholder means the session
+// settled, so the frame is ready whatever the footer says (#29).
+const postCompletionFrame = [transcript, statusRow("Chat: New chat · 34m left · 15.2K (1%)"), readyComposer].join("\n");
 // The footer chat segment without a usage row: displaced outranks draft.
 const draftBaitFrame = [transcript, " Chat: New chat", readyComposer].join("\n");
+// The stranded first submit: footer names the chat, the composer still holds the
+// submitted text instead of the placeholder.
+const strandedDraftFrame = [
+  transcript,
+  " Chat: New chat",
+  composer("Run this exact shell command and then reply with the single word done\u2588"),
+].join("\n");
 
 const welcomeBox = [
   "╭" + "─".repeat(62) + "╮",
@@ -104,8 +114,12 @@ describe("recognizeScreen", () => {
     });
   });
 
-  test("draft is the footer chat segment without a welcome box", () => {
-    expect(recognizeScreen(draftFrame)).toEqual({ screen: "draft", level: "pass", missing: [] });
+  test("the post-completion frame with a live usage row and the placeholder is ready, whatever the footer says", () => {
+    expect(recognizeScreen(postCompletionFrame)).toEqual({ screen: "ready", level: "pass", missing: [] });
+  });
+
+  test("the footer chat segment with a stranded-text composer stays draft", () => {
+    expect(recognizeScreen(strandedDraftFrame)).toEqual({ screen: "draft", level: "pass", missing: [] });
   });
 
   test("the chat segment without the usage row is displaced, not draft", () => {
