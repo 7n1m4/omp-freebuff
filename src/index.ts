@@ -259,23 +259,21 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
     },
   });
 
-  const cancelParams = pi.zod.object({
-    taskId: pi.zod.string().optional().describe("Omit to cancel the active Task; or name a queued Task."),
-  });
-  pi.registerTool<typeof cancelParams>({
+  const noParams = pi.zod.object({});
+  pi.registerTool<typeof noParams>({
     name: "freebuff_cancel",
     label: "Freebuff cancel",
     description:
-      "Stop the active freebuff Task (Esc, a wait, Ctrl-C up to three times, then a forced kill) or dequeue a " +
-      "queued one. Owner-gated: refused while another session's Task is in flight. Waits for the Task to " +
-      "settle before returning, which can take up to about five seconds. An active Task's partial progress " +
-      "is archived and the result carries its archivePath; a dequeued Task never started, so it returns " +
-      "{taskId, verdict} only.",
-    parameters: cancelParams,
+      "Stop the active freebuff Task (Esc, a wait, Ctrl-C up to three times, then a forced kill). Targets only " +
+      "the active Task and takes no taskId; the queue keeps running behind it. Owner-gated: refused while " +
+      "another session's Task is in flight. Waits for the Task to settle before returning, which can take up " +
+      "to about five seconds. An active Task's partial progress is archived and the result carries its " +
+      "archivePath.",
+    parameters: noParams,
     loadMode: "essential",
-    execute: async (_toolCallId, { taskId }, _signal, _onUpdate, ctx) => {
+    execute: async (_toolCallId, _args, _signal, _onUpdate, ctx) => {
       try {
-        const result = await singletonOf().cancel(bindingFor(pi, ctx), taskId);
+        const result = await singletonOf().cancel(bindingFor(pi, ctx));
         const archive = result.archivePath === undefined ? "" : `; archive: ${result.archivePath}`;
         const head =
           result.verdict === "done"
@@ -291,7 +289,6 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
     },
   });
 
-  const noParams = pi.zod.object({});
   pi.registerTool<typeof noParams>({
     name: "freebuff_status",
     label: "Freebuff status",

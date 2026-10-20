@@ -699,7 +699,7 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
       expect(existsSync(join(pluginDir, "lock.json"))).toBe(false);
     });
 
-    test("a double cancel resolves both awaits with the same result; a later named cancel is unknown_task", async () => {
+    test("a double cancel resolves both awaits with the same result", async () => {
       const { taskId } = await workingSubmit();
 
       const first = guard(sing().cancel(owner));
@@ -709,10 +709,6 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
       const two = await driveGuard(clock, second);
       expect(two).toEqual(one);
       expect(one).toMatchObject({ taskId, verdict: "cancelled" });
-
-      const status = sing().statusExtra();
-      expect(await rejectionOf(clock, sing().cancel(owner, taskId))).toMatchObject({ code: "unknown_task" });
-      expect(sing().statusExtra()).toEqual(status);
     });
 
     test("cancel during submit: the parked run call rejects naming the cancelled verdict and the push still fires", async () => {
@@ -739,15 +735,14 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
       expect(drivers).toHaveLength(2);
     });
 
-    test("a queued cancel dequeues the task without ever spawning; it reads as unknown_task afterwards", async () => {
+    test("a user interrupt dequeues a queued task without ever spawning; the working one detaches", async () => {
       const first = await workingSubmit();
       const second = await sing().submit(submitInput());
       expect(drivers).toHaveLength(1);
 
-      expect(await driveGuard(clock, guard(sing().cancel(owner, second.taskId)))).toEqual({
-        taskId: second.taskId,
-        verdict: "cancelled",
-      });
+      // ADR-0003: the abort detaches the working Task and cancels the queued
+      // one outright — it never starts, never spawns, never archives.
+      sing().interrupt(owner, "Interrupted by user");
       expect(sing().statusExtra()).toEqual({
         queue: { depth: 0, taskIds: [] },
         activeTask: { taskId: first.taskId, phase: "working" },
@@ -756,24 +751,10 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
       expect(drivers).toHaveLength(1);
       expect(existsSync(join(pluginDir, "tasks", second.taskId))).toBe(false);
 
-      // The active task was untouched and still delivers its own push.
+      // The detached task was untouched and still delivers its own push.
       drivers[0].endTurn(ANSWER);
       await pumpUntil(clock, () => pushes.length === 1);
       expect(pushes.map((push) => push.taskId)).toEqual([first.taskId]);
-    });
-
-    test("an unknown id and a settled id refuse as unknown_task with no state change", async () => {
-      const { taskId } = await workingSubmit();
-
-      const inFlight = sing().statusExtra();
-      expect(await rejectionOf(clock, sing().cancel(owner, "freebuff-nope"))).toMatchObject({ code: "unknown_task" });
-      expect(sing().statusExtra()).toEqual(inFlight);
-
-      drivers[0].endTurn(ANSWER);
-      await pumpUntil(clock, () => pushes.length === 1);
-      const settled = sing().statusExtra();
-      expect(await rejectionOf(clock, sing().cancel(owner, taskId))).toMatchObject({ code: "unknown_task" });
-      expect(sing().statusExtra()).toEqual(settled);
     });
 
     test("a cancel with nothing active is refused as no_active_task", async () => {

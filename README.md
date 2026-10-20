@@ -92,16 +92,16 @@ returns the verbatim answer as the tool text; a `failed` Task is an
 `isError` result carrying the Verdict, the reason and a screen excerpt.
 Errors: `unknown_task`, `not_owner`.
 
-### `freebuff_cancel { taskId?: string }`
+### `freebuff_cancel {}`
 
 Stops the active Task through the cancel ladder (Esc, a wait, Ctrl-C up to
 three times, then a forced kill) and waits for it to settle, up to about five
-seconds, before returning `{taskId, verdict, archivePath?}`. If the Task
+seconds, before returning `{taskId, verdict, archivePath?}`. It targets only
+the active Task, takes no `taskId`, and stops the queue not at all. If the Task
 finished inside the ladder's window the verdict is `done`. The Instance exits;
-the next Task spawns fresh; queued Tasks behind keep running. A queued Task
-named by `taskId` is dequeued instead and never started: the result is
-`{taskId, verdict: "cancelled"}` with no `archivePath`. Errors: `unknown_task`,
-`no_active_task`, `not_owner`.
+the next Task spawns fresh; queued Tasks behind keep running. Errors:
+`no_active_task`, `not_owner`. A queued Task is dequeued only by a user
+interrupt of the tool call (ADR-0003), never by this tool.
 
 ### `freebuff_status {}`
 

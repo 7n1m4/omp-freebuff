@@ -79,7 +79,7 @@ export interface SingletonStatus {
   activeTask: { taskId: string; phase: Phase } | null;
 }
 
-/** What freebuff_cancel returns once the target has settled (#22); no archivePath for a queued Task.
+/** What freebuff_cancel returns once the active Task has settled (#22).
  * `verdict: "done"` reports a turn that completed inside the ladder's window — nothing was cancelled. */
 export type CancelResult = { taskId: string; verdict: Verdict | "done"; archivePath?: string };
 
@@ -446,49 +446,33 @@ export class FreebuffSingleton {
     return text ?? fail({ code: "no_instance", message: "no live freebuff instance" });
   }
 
-  // Cancel (#22, ADR-0003): the Owner's stop. A queued Task is dequeued on the
-  // spot; the active Task is stopped through the runner and the call returns
-  // only once it has settled, with the truthful verdict: a natural settle that
-  // won the race reads as its own, not as cancelled.
-  async cancel(binding: OwnerBinding, taskId?: string): Promise<CancelResult> {
+  // Cancel (#22, ADR-0003): the Owner's stop. It targets only the active Task,
+  // takes no taskId, and stops the queue not at all; a queued Task's dequeue
+  // lives on the user-interrupt path. The call returns only once the Task has
+  // settled, with the truthful verdict: a natural settle that won the race
+  // reads as its own, not as cancelled.
+  async cancel(binding: OwnerBinding): Promise<CancelResult> {
     this.gate(binding);
-    let task: TaskRecord;
-    if (taskId !== undefined) {
-      const named = this.tasks.get(taskId);
-      if (named === undefined || named.settledAt !== undefined) {
-        throw { code: "unknown_task", message: `no freebuff task ${taskId} in flight` };
-      }
-      task = named;
-    } else {
-      const active = this.active();
-      if (active === undefined) {
-        throw { code: "no_active_task", message: "no active freebuff task to cancel" };
-      }
-      task = active;
-    }
-    if (task.phase === "queued") {
-      // Dropped before it ever started: no activation, no spawn, no archive.
-      this.queue = this.queue.filter((id) => id !== task.taskId);
-      this.tasks.delete(task.taskId);
-      task.ack.reject({ code: "cancelled", verdict: "cancelled", message: "task cancelled while queued" });
-      return { taskId: task.taskId, verdict: "cancelled" };
+    const active = this.active();
+    if (active === undefined) {
+      throw { code: "no_active_task", message: "no active freebuff task to cancel" };
     }
     this.runner?.cancel();
-    await task.settling;
-    if (task.phase === "done") {
+    await active.settling;
+    if (active.phase === "done") {
       // The turn completed inside the ladder's window: the cancel reports the
       // completion instead of a cancelled verdict that never happened.
-      return { taskId: task.taskId, verdict: "done", archivePath: task.archivePath };
+      return { taskId: active.taskId, verdict: "done", archivePath: active.archivePath };
     }
-    if (task.failure !== undefined) {
+    if (active.failure !== undefined) {
       // The run ended in an abandon (lock contention, a broken junction): no
       // Verdict exists, so cancel carries the abandonment's own rejection
       // rather than dressing it up as cancelled.
-      throw task.failure;
+      throw active.failure;
     }
     // A settled failure always carries its Verdict (settle()); the abandon
     // case threw above.
-    return { taskId: task.taskId, verdict: task.verdict!, archivePath: task.archivePath };
+    return { taskId: active.taskId, verdict: active.verdict!, archivePath: active.archivePath };
   }
 
   // The User-interrupt seam (#22): OMP aborted the tool call, and the Task's

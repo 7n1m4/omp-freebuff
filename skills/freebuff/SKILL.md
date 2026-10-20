@@ -43,13 +43,12 @@ from any session.
 
 ## Cancel
 
-`freebuff_cancel { taskId? }` stops the active Task: Esc, a wait, Ctrl-C up to
-three times, then a forced kill. It blocks until the Task settles, about five
-seconds, and returns `{taskId, verdict, archivePath?}`; the Instance exits, and
-partial progress is archived under the Verdict `cancelled`. The next Task
-spawns fresh. A queued Task named by `taskId` is dequeued instead: it never
-started, so the result carries no `archivePath`. Queued Tasks behind keep
-running.
+`freebuff_cancel {}` stops the active Task: Esc, a wait, Ctrl-C up to three
+times, then a forced kill. It takes no `taskId`, targets only the active Task,
+blocks until the Task settles, about five seconds, and returns
+`{taskId, verdict, archivePath?}`; the Instance exits, and partial progress is
+archived under the Verdict `cancelled`. The next Task spawns fresh. Queued
+Tasks behind keep running.
 
 ## Detach
 
