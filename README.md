@@ -14,29 +14,28 @@ with those meanings. Decisions live in [docs/adr/](docs/adr/).
 
 The repo checkout is the extension package (ADR-0005): `package.json` declares
 `omp.extensions: ["./src/index.ts"]`, and OMP loads the extension straight from
-the source tree — no build step.
+the source tree — no build step. Both installs below register the package
+through the plugin manager, which loads `package.json#omp.extensions` and scans
+the package's `skills/` — so the bundled skill is discovered without config
+edits. Either way, reload = OMP restart; there is no hot reload.
 
-1. Create the junction OMP discovers extensions in, once, by hand:
+Local, from a clone (development: edit the checkout, the link points at it):
 
-   ```
-   cmd /c mklink /J "%USERPROFILE%\.omp\agent\extensions\pi-freebuff" <checkout-path>
-   ```
+```
+git clone https://github.com/vadash/pi-freebuff
+omp plugin link C:\path\to\pi-freebuff
+```
 
-2. Register the same directory as an extension root so the bundled skill is
-   discovered. The junction walk loads extension code only; the skill provider
-   scans `<extension-root>/skills`, so without this step the skill is silently
-   ignored. Add the checkout (or junction) path to the `extensions:` setting in
-   `~/.omp/config.yml` (or the project config):
+From GitHub, no clone (installs a copy under `~/.omp/plugins`):
 
-   ```yaml
-   extensions:
-     - C:\projects\_llm\pi-freebuff
-   ```
+```
+omp plugin install github:vadash/pi-freebuff
+```
 
-   `-e <path>` on the OMP command line works too.
-
-Reloading or updating means `git pull` in the checkout plus an OMP restart:
-there is no hot reload.
+Full git URLs work too (`https://github.com/vadash/pi-freebuff`,
+`git@github.com:vadash/pi-freebuff.git`). Updates: `git pull` + OMP restart for
+a link, `omp plugin upgrade pi-freebuff` + OMP restart for a git install.
+`omp plugin uninstall pi-freebuff` removes either.
 
 ## Cutover
 

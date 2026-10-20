@@ -12,7 +12,7 @@ The extension must load from the live checkout, so edits need no build step, whi
 
 ## Decision
 
-The repo root is the package. `package.json#omp.extensions` declares the entry (`["./src/index.ts"]`), which keeps tests, probes and `node_modules` out of the extension graph. `~/.omp/agent/extensions/pi-freebuff` is a Windows junction to the checkout, created once by hand. Reloading means restarting OMP: there is no hot reload, and the `?mtime` cache-buster is ignored on Windows.
+The repo root is the package. `package.json#omp.extensions` declares the entry (`["./src/index.ts"]`), which keeps tests, probes and `node_modules` out of the extension graph. The checkout is registered through the plugin manager — `omp plugin link <checkout-path>` for development (a junction at `~/.omp/plugins/node_modules/<name>`), `omp plugin install github:vadash/pi-freebuff` for a copied install — which loads the same `omp.extensions` field and discovers `skills/` conventionally. A hand-made junction into `~/.omp/agent/extensions/` plus an `extensions:` config entry remains a working equivalent. Reloading means restarting OMP: there is no hot reload, and the `?mtime` cache-buster is ignored on Windows.
 
 ## Considered options
 
@@ -22,5 +22,5 @@ The repo root is the package. `package.json#omp.extensions` declares the entry (
 ## Consequences
 
 - Deleting the checkout breaks the load.
-- Junction creation is a one-time manual setup, documented in AGENTS.md.
+- Registration is a one-time `omp plugin link` / `omp plugin install`.
 - Every reload costs an OMP restart.

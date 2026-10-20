@@ -19,5 +19,5 @@ Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agent
 - Setup: `bun install`.
 - Test: `bun test` — the only runner (no vitest, no node-pty, no @xterm/headless).
 - Typecheck: `bun run typecheck`.
-- Install shape: `cmd /c mklink /J "%USERPROFILE%\.omp\agent\extensions\pi-freebuff" <checkout-path>`; reload = OMP restart (see ADR-0005).
+- Install shape: `omp plugin link <checkout-path>` (dev) or `omp plugin install github:vadash/pi-freebuff`; reload = OMP restart (see ADR-0005).
 - Host seam: `src/host/pty.ts` is the only module importing host internals (`@oh-my-pi/pi-natives`, `@oh-my-pi/pi-utils/vterm`); `tests/hostSeam.test.ts` enforces this.
