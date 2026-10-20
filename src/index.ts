@@ -1,4 +1,4 @@
-// The five-tool async surface over the process-scoped singleton (ADR-0004).
+// The six-tool async surface over the process-scoped singleton (ADR-0004).
 // OMP rebinds this factory per session, and action methods throw while the
 // factory loads, so everything beyond registration happens inside a tool
 // execute or a session_shutdown handler: the runner config is parsed on first
@@ -209,7 +209,10 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
       "Submit one freebuff Task. Returns at the Ack, not the answer: {taskId, phase: \"working\"}, or " +
       "{taskId, phase: \"queued\", position} when another Task is in flight. The answer arrives later as an " +
       "asynchronous push (aside) into this conversation and stays pollable via freebuff_progress. " +
-      "One Task runs at a time, queue depth 4; only the owning session's calls are answered.",
+      "One Task runs at a time, queue depth 4; only the owning session's calls are answered. " +
+      "For long independent Tasks only (multi-file refactor, migration, self-contained feature) - not quick " +
+      "in-session work. Independent Tasks: submit them all in one turn; they run FIFO, one at a time. " +
+      "Esc aborts the call, not a working Task (it detaches).",
     parameters: runParams,
     loadMode: "essential",
     execute: async (_toolCallId, { prompt }, signal, _onUpdate, ctx) => {
@@ -267,6 +270,98 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
         return { content: [{ type: "text", text: progressText(details) }], details };
       } catch (error) {
         return errorResult(error);
+      }
+    },
+  });
+
+  const waitParams = pi.zod.object({
+    taskId: pi.zod.string().optional().describe("Omit to wait for the oldest unsettled owned Task; or name a task."),
+    timeoutSec: pi.zod.number().optional().describe("Default 300; clamped to 1-1800."),
+  });
+  pi.registerTool<typeof waitParams>({
+    name: "freebuff_wait",
+    label: "Freebuff wait",
+    description:
+      "Block until a freebuff Task settles: returns the verbatim answer when done, the failure line when failed. " +
+      "Omit taskId to wait for the oldest unsettled owned Task (drains the queue stepwise). Returns a snapshot " +
+      "and 'call again' on timeout (default 300s, cap 1800s), 'Nothing in flight' when no owned Task is unsettled, " +
+      "and an already-settled Task's result immediately. Esc aborts the call, not a working Task (it detaches). " +
+      "Owner-gated like freebuff_progress.",
+    parameters: waitParams,
+    loadMode: "essential",
+    execute: async (_toolCallId, { taskId, timeoutSec }, signal, onUpdate, ctx) => {
+      const singleton = singletonOf();
+      const binding = bindingFor(pi, ctx);
+      const timeoutMs = Math.min(1800, Math.max(1, timeoutSec ?? 300)) * 1000;
+      // The user stopping the parent's turn aborts this call exactly like a
+      // run's (#22, ADR-0008): the singleton detaches a working Task and
+      // cancels a queued or submitting one, and the waited task's wait
+      // resolves at once instead of dangling behind the aborted call. The
+      // listener outlives this call on purpose; interrupt() is a no-op once
+      // nothing is in flight, so a late fire cannot hurt a settled Task.
+      const onAbort = () => {
+        try {
+          singleton.interrupt(binding, signal?.reason);
+        } catch {
+          // Contained: an interrupt must never fail the tool call itself.
+        }
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      // While the call blocks, the same text freebuff_progress renders goes to
+      // the tool view as a snapshot, about every five seconds.
+      const feed = setInterval(() => {
+        try {
+          onUpdate?.({ content: [{ type: "text", text: progressText(singleton.progress(taskId, binding)) }] });
+        } catch {
+          // A snapshot that cannot be composed (the task left the flight)
+          // never fails the wait.
+        }
+      }, 5_000);
+      try {
+        const outcome = await singleton.waitOne(binding, taskId, timeoutMs);
+        if (outcome.kind === "none") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Nothing in flight: no queued or working freebuff Task owned by this session is unsettled.",
+              },
+            ],
+            details: outcome,
+          };
+        }
+        const { details } = outcome;
+        if (outcome.kind === "interrupted") {
+          const note =
+            details.phase === "working" || details.phase === "settling"
+              ? "the Task detaches and keeps running; its answer still arrives as an asynchronous push"
+              : "the Task left the flight";
+          return { content: [{ type: "text", text: `${progressText(details)} — aborted: ${note}` }], details };
+        }
+        if (outcome.kind === "timeout") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `${progressText(details)} Still settling — call freebuff_wait again to keep waiting.`,
+              },
+            ],
+            details,
+          };
+        }
+        if (details.phase === "failed") {
+          // The same lockstep failure line the push and the poll render.
+          return {
+            isError: true,
+            content: [{ type: "text", text: failedLine(details.taskId, details.verdict, details.message) }],
+            details,
+          };
+        }
+        return { content: [{ type: "text", text: details.answer ?? "" }], details };
+      } catch (error) {
+        return errorResult(error);
+      } finally {
+        clearInterval(feed);
       }
     },
   });

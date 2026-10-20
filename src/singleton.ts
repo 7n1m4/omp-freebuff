@@ -90,11 +90,26 @@ export interface SingletonStatus {
  * `verdict: "done"` reports a turn that completed inside the ladder's window — nothing was cancelled. */
 export type CancelResult = { taskId: string; verdict: Verdict | "done"; archivePath?: string };
 
-/** The paint timer's clock; production uses a real unref'd setInterval (ADR-0004). */
+/** What a bounded wait (freebuff_wait, ADR-0008) resolves with: `settled` carries
+ * the terminal payload settle() stored — never a recomputation; `timeout` a
+ * fresh snapshot of the still-unsettled task; `interrupted` the marker for a
+ * user interrupt that ended the task's flight (detach or dequeue), which the
+ * tool renders as a snapshot; `none` when nothing owned is unsettled. */
+export type WaitOutcome =
+  | { kind: "settled"; details: ProgressDetails }
+  | { kind: "timeout"; details: ProgressDetails }
+  | { kind: "interrupted"; details: ProgressDetails }
+  | { kind: "none" };
+
+/** The paint timer's clock; production uses a real unref'd setInterval (ADR-0004).
+ * The one-shot pair exists for the bounded waits (ADR-0008): wait timers ride
+ * the same injectable clock, so virtual time drives them in tests. */
 interface PaintTick {
   now(): number;
   setInterval(fn: () => void, ms: number): unknown;
   clearInterval(id: unknown): void;
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(id: unknown): void;
 }
 
 export interface FreebuffSingletonDeps {
@@ -155,6 +170,15 @@ interface TaskRecord {
   ack: { promise: Promise<SubmitOk>; resolve(value: SubmitOk): void; reject(reason: unknown): void };
 }
 
+// One pending bounded wait (ADR-0008), keyed by its task's id. Exactly one
+// resolution per waiter — settle, timeout or interrupt — and the timer is
+// cleared on every path that resolves earlier than the bound.
+interface Waiter {
+  task: TaskRecord;
+  resolve(outcome: WaitOutcome): void;
+  timer: unknown;
+}
+
 // A gone binding's paint/push become silent no-ops; the recorded owner session
 // id, not this object, still gates every call.
 const GONE_BINDING: OwnerBinding = {
@@ -179,6 +203,14 @@ const REAL_TICK: PaintTick = {
   clearInterval: (id: unknown): void => {
     clearInterval(id as ReturnType<typeof setInterval>);
   },
+  setTimeout: (fn: () => void, ms: number): unknown => {
+    const id = setTimeout(fn, ms);
+    id.unref?.(); // never holds the process open (ADR-0004)
+    return id;
+  },
+  clearTimeout: (id: unknown): void => {
+    clearTimeout(id as ReturnType<typeof setTimeout>);
+  },
 };
 
 export class FreebuffSingleton {
@@ -186,6 +218,9 @@ export class FreebuffSingleton {
   private readonly tick: PaintTick;
   private readonly paintTickMs: number;
   private readonly tasks = new Map<string, TaskRecord>();
+  // Pending bounded waits (ADR-0008) by taskId: each resolves exactly once, on
+  // its task's settle, its own timeout or the interrupt that ends its flight.
+  private readonly waits = new Map<string, Set<Waiter>>();
   private queue: string[] = [];
   private activeTaskId: string | null = null;
   private runner: TurnRunner | null = null;
@@ -346,6 +381,9 @@ export class FreebuffSingleton {
       }
     }
     this.clearPaint(task);
+    // The bounded waits (ADR-0008) read the terminal state settle just stored —
+    // the only place they ever learn a Verdict from.
+    this.resolveWaits(task, { kind: "settled", details: this.detailsOf(task) });
     this.drain();
   }
 
@@ -390,6 +428,9 @@ export class FreebuffSingleton {
     task.message = rejection.message;
     task.failure = rejection;
     this.clearPaint(task);
+    // Failed-shaped: a bounded wait reads the abandonment like any settle,
+    // under the shared failed rendering.
+    this.resolveWaits(task, { kind: "settled", details: this.detailsOf(task) });
     this.drain();
     task.ack.reject(rejection);
   }
@@ -412,31 +453,7 @@ export class FreebuffSingleton {
     if (task.ownerSessionId !== binding.sessionId) {
       fail({ code: "not_owner", message: this.ownerMessage(task) });
     }
-    const details: ProgressDetails = {
-      taskId: task.taskId,
-      phase: task.phase,
-      phaseSource: task.phaseSource,
-      elapsedMs: this.elapsedMs(task),
-      verdict: task.verdict,
-      answer: task.answer,
-      message: task.message,
-      archivePath: task.archivePath,
-      screenExcerpt: task.phase === "failed" ? task.screenExcerpt : undefined,
-      warnings: task.warnings.length > 0 ? task.warnings : undefined,
-      position: task.phase === "queued" ? this.queue.indexOf(task.taskId) + 1 : undefined,
-    };
-    // The per-step feed (story 14) rides the active Task's progress: step
-    // counter, last tool call and result, the running answer, the rendered
-    // block count. A settled or queued Task has no feed to ride.
-    const feed = task.taskId === this.activeTaskId ? this.runner?.feedSample() : null;
-    if (feed !== null && feed !== undefined) {
-      details.steps = feed.step;
-      if (feed.lastToolCall !== undefined) details.lastToolCall = feed.lastToolCall;
-      if (feed.lastToolResult !== undefined) details.lastToolResult = feed.lastToolResult;
-      if (feed.partialAnswer !== undefined) details.partialAnswer = feed.partialAnswer;
-      if (feed.blocks !== undefined) details.blocks = feed.blocks;
-    }
-    return details;
+    return this.detailsOf(task);
   }
 
   // Truthful only: what the queue and the active slot hold right now.
@@ -489,6 +506,50 @@ export class FreebuffSingleton {
     return { taskId: active.taskId, verdict: active.verdict!, archivePath: active.archivePath };
   }
 
+  // -- wait ---------------------------------------------------------------------
+
+  // The bounded long-poll behind freebuff_wait (ADR-0008): resolves exactly
+  // once — at the waited task's settle (the payload settle() stored, never a
+  // recomputation), at the timeout bound (with a fresh snapshot), or at the
+  // user interrupt that ends the task's flight (the interrupted marker the
+  // tool renders as a snapshot). A named already-settled task returns
+  // immediately; no taskId waits for the oldest unsettled owned task — the
+  // active one first, then queue order — so consecutive waits drain the queue
+  // stepwise. Owner-gated like every query; the bound rides the same
+  // injectable clock as the paint tick, so virtual time fires it in tests.
+  waitOne(binding: OwnerBinding, taskId: string | undefined, timeoutMs: number): Promise<WaitOutcome> {
+    this.gate(binding);
+    // The taskId-less target is the oldest unsettled owned task — the active
+    // slot first, then the queue's head; gate() has already refused any
+    // foreign in-flight task, so every candidate here is this session's own.
+    const task =
+      taskId !== undefined
+        ? this.tasks.get(taskId)
+        : (this.active() ?? (this.queue.length > 0 ? this.tasks.get(this.queue[0]!) : undefined));
+    if (task === undefined) {
+      if (taskId !== undefined) fail({ code: "unknown_task", message: `no freebuff task ${taskId}` });
+      return Promise.resolve({ kind: "none" });
+    }
+    if (task.ownerSessionId !== binding.sessionId) {
+      fail({ code: "not_owner", message: this.ownerMessage(task) });
+    }
+    if (task.phase === "done" || task.phase === "failed") {
+      return Promise.resolve({ kind: "settled", details: this.detailsOf(task) });
+    }
+    const wait = Promise.withResolvers<WaitOutcome>();
+    const waiter: Waiter = { task, resolve: wait.resolve, timer: undefined };
+    waiter.timer = this.tick.setTimeout(() => {
+      // The bound consumed its timer: drop the waiter first, so the settle
+      // that lands later finds nobody left to resolve.
+      this.dropWaiter(task.taskId, waiter);
+      wait.resolve({ kind: "timeout", details: this.detailsOf(task) });
+    }, timeoutMs);
+    const pending = this.waits.get(task.taskId);
+    if (pending === undefined) this.waits.set(task.taskId, new Set([waiter]));
+    else pending.add(waiter);
+    return wait.promise;
+  }
+
   // The User-interrupt seam (#22): OMP aborted the tool call, and the Task's
   // fate follows ADR-0003. A working (or settling) Task with the user-interrupt
   // reason detaches: it keeps its Watchdog and Lock, its answer arrives by the
@@ -499,8 +560,18 @@ export class FreebuffSingleton {
     try {
       for (const task of this.inFlight()) {
         if (task.ownerSessionId !== binding.sessionId) continue;
-        if (reason === "Interrupted by user" && (task.phase === "working" || task.phase === "settling")) continue;
+        if (reason === "Interrupted by user" && (task.phase === "working" || task.phase === "settling")) {
+          // The detach keeps the Task running (ADR-0003), but a wait on it must
+          // not outlive the aborted call: it resolves now, carrying the working
+          // snapshot the tool renders as the call's last word. The Task's own
+          // settle push still fires when the turn ends.
+          this.resolveWaits(task, { kind: "interrupted", details: this.detailsOf(task) });
+          continue;
+        }
         if (task.phase === "queued") {
+          // Snapshot while the record still holds its queue position; the
+          // dequeue below takes it out of the flight for good.
+          this.resolveWaits(task, { kind: "interrupted", details: this.detailsOf(task) });
           this.queue = this.queue.filter((id) => id !== task.taskId);
           this.tasks.delete(task.taskId);
           task.ack.reject({ code: "cancelled", verdict: "cancelled", message: "task cancelled while queued" });
@@ -570,8 +641,60 @@ export class FreebuffSingleton {
     }
   }
 
+  // Resolves every pending wait on the task exactly once and clears each
+  // timer; the map entry is gone before any promise settles, so a later
+  // settle finds nobody left to double-resolve.
+  private resolveWaits(task: TaskRecord, outcome: WaitOutcome): void {
+    const pending = this.waits.get(task.taskId);
+    if (pending === undefined) return;
+    this.waits.delete(task.taskId);
+    for (const waiter of pending) {
+      if (waiter.timer !== undefined) this.tick.clearTimeout(waiter.timer);
+      waiter.resolve(outcome);
+    }
+  }
+
+  // The timeout path's own removal: the fired timer's waiter leaves the set,
+  // leaving any co-waiters on the same task untouched.
+  private dropWaiter(taskId: string, waiter: Waiter): void {
+    const pending = this.waits.get(taskId);
+    if (pending === undefined) return;
+    pending.delete(waiter);
+    if (pending.size === 0) this.waits.delete(taskId);
+  }
+
   private ownerMessage(task: TaskRecord): string {
     return `freebuff is busy with a task owned by ${task.ownerLabel} (${task.ownerSessionId})`;
+  }
+
+  // The one ProgressDetails composer, shared by the poll and the bounded
+  // wait's snapshots: terminal fields read what settle() stored, the per-step
+  // feed (story 14) rides only the active Task — step counter, last tool call
+  // and result, the running answer, the rendered block count. A settled or
+  // queued Task has no feed to ride.
+  private detailsOf(task: TaskRecord): ProgressDetails {
+    const details: ProgressDetails = {
+      taskId: task.taskId,
+      phase: task.phase,
+      phaseSource: task.phaseSource,
+      elapsedMs: this.elapsedMs(task),
+      verdict: task.verdict,
+      answer: task.answer,
+      message: task.message,
+      archivePath: task.archivePath,
+      screenExcerpt: task.phase === "failed" ? task.screenExcerpt : undefined,
+      warnings: task.warnings.length > 0 ? task.warnings : undefined,
+      position: task.phase === "queued" ? this.queue.indexOf(task.taskId) + 1 : undefined,
+    };
+    const feed = task.taskId === this.activeTaskId ? this.runner?.feedSample() : null;
+    if (feed !== null && feed !== undefined) {
+      details.steps = feed.step;
+      if (feed.lastToolCall !== undefined) details.lastToolCall = feed.lastToolCall;
+      if (feed.lastToolResult !== undefined) details.lastToolResult = feed.lastToolResult;
+      if (feed.partialAnswer !== undefined) details.partialAnswer = feed.partialAnswer;
+      if (feed.blocks !== undefined) details.blocks = feed.blocks;
+    }
+    return details;
   }
 
   private active(): TaskRecord | undefined {
@@ -646,6 +769,16 @@ export class FreebuffSingleton {
   // child processes.
   dispose(): void {
     this.stopTick();
+    // No awaited bounded wait dangles past a dispose: each pending long-poll
+    // resolves on the spot with its task's last snapshot (a teardown empties
+    // the flight), and every timer is cleared with it.
+    for (const pending of this.waits.values()) {
+      for (const waiter of pending) {
+        if (waiter.timer !== undefined) this.tick.clearTimeout(waiter.timer);
+        waiter.resolve({ kind: "interrupted", details: this.detailsOf(waiter.task) });
+      }
+    }
+    this.waits.clear();
     this.tasks.clear();
     this.queue = [];
     this.activeTaskId = null;
