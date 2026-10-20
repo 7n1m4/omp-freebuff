@@ -15,6 +15,13 @@ import { defaultPluginDir, workspaceDir } from "./workspace";
 
 const RUNNER_JSON_ENV = "PI_FREEBUFF_RUNNER_JSON";
 
+// freebuff_wait's declared bounds (ADR-0008): the tool description, the
+// parameter describe and the clamp all read these, so the numbers are
+// stated exactly once.
+const WAIT_DEFAULT_SEC = 300;
+const WAIT_MIN_SEC = 1;
+const WAIT_MAX_SEC = 1800;
+
 // Memoized on the raw env value: production never changes it, so this parses
 // once per process, while a test rig (a new JSON per test) re-reads the env.
 let cachedJson: string | undefined;
@@ -141,6 +148,44 @@ const progressText = (details: ProgressDetails): string => {
   return `freebuff task ${details.taskId} ${at} (${details.phaseSource}, ${Math.floor(details.elapsedMs / 1000)}s${feed})`;
 };
 
+// One wiring shared by freebuff_run and freebuff_wait: the host stopping the
+// call hands the stop to the singleton (ADR-0003), which detaches a working
+// Task and cancels a queued or submitting one, and the waited task's wait
+// resolves instead of dangling behind the stopped call. The listener outlives
+// the call on purpose, because run returns at the Ack while the Task is still
+// in flight; a late fire is a no-op once nothing is in flight.
+const onStopSignal = (singleton: FreebuffSingleton, binding: OwnerBinding, signal: AbortSignal | undefined): void => {
+  signal?.addEventListener(
+    "abort",
+    () => {
+      try {
+        singleton.interrupt(binding, signal.reason);
+      } catch {
+        // Contained: the stop must never fail the tool call itself.
+      }
+    },
+    { once: true },
+  );
+};
+
+// The one settled-or-flight renderer, shared by the poll and the wait's
+// settled branch: failed is the lockstep failure line the push and the poll
+// both render, done the verbatim answer, anything still in flight the
+// progress snapshot.
+const progressResult = (details: ProgressDetails): AgentToolResult => {
+  if (details.phase === "failed") {
+    return {
+      isError: true,
+      content: [{ type: "text", text: failedLine(details.taskId, details.verdict, details.message) }],
+      details,
+    };
+  }
+  if (details.phase === "done") {
+    return { content: [{ type: "text", text: details.answer ?? "" }], details };
+  }
+  return { content: [{ type: "text", text: progressText(details) }], details };
+};
+
 const statusText = (status: StatusResult & { queue: { depth: number }; activeTask: { taskId: string; phase: string } | null }): string => {
   const parts = [
     `lock ${status.lock.state}`,
@@ -218,20 +263,7 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
     execute: async (_toolCallId, { prompt }, signal, _onUpdate, ctx) => {
       const singleton = singletonOf();
       const binding = bindingFor(pi, ctx);
-      // The user stopping the parent's turn aborts this turn signal (#22): the
-      // singleton decides detach (working) vs cancel (queued/submitting). The
-      // listener outlives this call on purpose: a queued Task's call returns
-      // at once and a working Task's at the Ack, and both must still see the
-      // stop. interrupt() is a no-op once the Task is no longer in flight, so
-      // a late fire cannot hurt a settled Task.
-      const onAbort = () => {
-        try {
-          singleton.interrupt(binding, signal?.reason);
-        } catch {
-          // Contained: an interrupt must never fail the tool call itself.
-        }
-      };
-      signal?.addEventListener("abort", onAbort, { once: true });
+      onStopSignal(singleton, binding, signal);
       try {
         const ok = await singleton.submit({
           prompt,
@@ -258,16 +290,7 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
     loadMode: "essential",
     execute: async (_toolCallId, { taskId }, _signal, _onUpdate, ctx) => {
       try {
-        const details = singletonOf().progress(taskId, bindingFor(pi, ctx));
-        if (details.phase === "failed") {
-          // Push and poll render the identical failure line: failedLine is the
-          // lockstep formatter both delivery channels share.
-          return { isError: true, content: [{ type: "text", text: failedLine(details.taskId, details.verdict, details.message) }], details };
-        }
-        if (details.phase === "done") {
-          return { content: [{ type: "text", text: details.answer ?? "" }], details };
-        }
-        return { content: [{ type: "text", text: progressText(details) }], details };
+        return progressResult(singletonOf().progress(taskId, bindingFor(pi, ctx)));
       } catch (error) {
         return errorResult(error);
       }
@@ -276,7 +299,7 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
 
   const waitParams = pi.zod.object({
     taskId: pi.zod.string().optional().describe("Omit to wait for the oldest unsettled owned Task; or name a task."),
-    timeoutSec: pi.zod.number().optional().describe("Default 300; clamped to 1-1800."),
+    timeoutSec: pi.zod.number().optional().describe(`Default ${WAIT_DEFAULT_SEC}; clamped to ${WAIT_MIN_SEC}-${WAIT_MAX_SEC}.`),
   });
   pi.registerTool<typeof waitParams>({
     name: "freebuff_wait",
@@ -284,7 +307,7 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
     description:
       "Block until a freebuff Task settles: returns the verbatim answer when done, the failure line when failed. " +
       "Omit taskId to wait for the oldest unsettled owned Task (drains the queue stepwise). Returns a snapshot " +
-      "and 'call again' on timeout (default 300s, cap 1800s), 'Nothing in flight' when no owned Task is unsettled, " +
+      `and 'call again' on timeout (default ${WAIT_DEFAULT_SEC}s, cap ${WAIT_MAX_SEC}s), 'Nothing in flight' when no owned Task is unsettled, ` +
       "and an already-settled Task's result immediately. Esc stops the call, not a working Task (it detaches). " +
       "Owner-gated like freebuff_progress.",
     parameters: waitParams,
@@ -292,21 +315,8 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
     execute: async (_toolCallId, { taskId, timeoutSec }, signal, onUpdate, ctx) => {
       const singleton = singletonOf();
       const binding = bindingFor(pi, ctx);
-      const timeoutMs = Math.min(1800, Math.max(1, timeoutSec ?? 300)) * 1000;
-      // The user stopping the parent's turn aborts this call exactly like a
-      // run's (#22, ADR-0008): the singleton detaches a working Task and
-      // cancels a queued or submitting one, and the waited task's wait
-      // resolves at once instead of dangling behind the aborted call. The
-      // listener outlives this call on purpose; interrupt() is a no-op once
-      // nothing is in flight, so a late fire cannot hurt a settled Task.
-      const onAbort = () => {
-        try {
-          singleton.interrupt(binding, signal?.reason);
-        } catch {
-          // Contained: an interrupt must never fail the tool call itself.
-        }
-      };
-      signal?.addEventListener("abort", onAbort, { once: true });
+      const timeoutMs = Math.min(WAIT_MAX_SEC, Math.max(WAIT_MIN_SEC, timeoutSec ?? WAIT_DEFAULT_SEC)) * 1000;
+      onStopSignal(singleton, binding, signal);
       // While the call blocks, the same text freebuff_progress renders goes to
       // the tool view as a snapshot, about every five seconds.
       const feed = setInterval(() => {
@@ -330,15 +340,20 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
             details: outcome,
           };
         }
-        const { details } = outcome;
-        if (outcome.kind === "interrupted") {
+        if (outcome.kind === "detached" || outcome.kind === "cancelled" || outcome.kind === "disposed") {
+          const { details } = outcome;
+          // disposed is the teardown snapshot, claiming neither a detach nor
+          // a Cancel: only the extension going away ends a wait that way.
           const note =
-            details.phase === "working" || details.phase === "settling"
+            outcome.kind === "detached"
               ? "the Task detaches and keeps running; its answer still arrives as an asynchronous push"
-              : "the Task left the flight";
+              : outcome.kind === "cancelled"
+                ? "the Task left the flight"
+                : "the freebuff instance shut down while the Task was in flight";
           return { content: [{ type: "text", text: `${progressText(details)} — stopped: ${note}` }], details };
         }
         if (outcome.kind === "timeout") {
+          const { details } = outcome;
           return {
             content: [
               {
@@ -349,15 +364,7 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
             details,
           };
         }
-        if (details.phase === "failed") {
-          // The same lockstep failure line the push and the poll render.
-          return {
-            isError: true,
-            content: [{ type: "text", text: failedLine(details.taskId, details.verdict, details.message) }],
-            details,
-          };
-        }
-        return { content: [{ type: "text", text: details.answer ?? "" }], details };
+        return progressResult(outcome.details);
       } catch (error) {
         return errorResult(error);
       } finally {

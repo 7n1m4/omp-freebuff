@@ -44,8 +44,8 @@ export const driveGuard = async <T>(clock: VirtualClock, g: Guard<T>, budgetMs =
 };
 
 // A guard whose promise needs no virtual time (already settled, or settles
-// outside the clock): unwrap without driving.
-export const unwrap = async <T>(g: Guard<T>): Promise<T> => {
+// outside the clock): unwrap without driving, throwing a rejected result.
+export const unwrapOrThrow = async <T>(g: Guard<T>): Promise<T> => {
   const result = await g.promise;
   if (!result.ok) throw result.error;
   return result.value;

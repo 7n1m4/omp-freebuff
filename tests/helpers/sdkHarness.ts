@@ -22,14 +22,16 @@ import {
 } from "@oh-my-pi/pi-coding-agent";
 import {
   createMockModel,
+  type MockHandler,
   type MockModel,
   registerMockApi,
-  type MockResponse,
 } from "@oh-my-pi/pi-ai/providers/mock";
 
 export interface HarnessOptions {
   extensions?: ExtensionFactory[];
-  responses?: MockResponse[];
+  // MockHandler, not just MockResponse: a handler function resolves per
+  // request, which lets a script name an id the run only produces later.
+  responses?: MockHandler[];
   cwd?: string;
 }
 

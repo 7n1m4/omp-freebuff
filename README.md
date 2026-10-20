@@ -105,10 +105,11 @@ answer, a `failed` Task the same `isError` line `freebuff_progress` renders,
 and an already-settled Task returns its stored result immediately. Omitted
 `taskId` waits for the oldest unsettled owned Task — the active one first,
 then the queue head — so consecutive waits drain the queue stepwise.
-`timeoutSec` defaults to 300 and is clamped to 1–1800; a lapsed bound returns
-a progress snapshot with "Still settling — call freebuff_wait again to keep
-waiting.", and no unsettled owned Task returns "Nothing in flight" as a
-normal result. While it blocks, the call emits a progress snapshot about
+`timeoutSec` uses the bounds `freebuff_wait` declares: the tool's description
+states the default and the clamp, and the code reads those same constants. A
+lapsed bound returns a progress snapshot with "Still settling — call
+freebuff_wait again to keep waiting.", and no unsettled owned Task returns
+"Nothing in flight" as a normal result. While it blocks, the call emits a progress snapshot about
 every five seconds. Owner-gated like `freebuff_progress`; errors:
 `unknown_task`, `not_owner`. A user Esc aborts the call, not a working Task —
 it detaches (ADR-0003) — while a queued Task is cancelled.

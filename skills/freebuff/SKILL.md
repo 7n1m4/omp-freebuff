@@ -43,10 +43,10 @@ returns at the Verdict, so a turn holds a long Task without polling: `done`
 returns the verbatim answer, `failed` the same failed line
 `freebuff_progress` renders, and an already-settled Task returns its stored
 result immediately. Omitted `taskId` waits for the oldest unsettled owned
-Task — the active one first, then the queue head. `timeoutSec` defaults to
-300 and is clamped to 1–1800; a lapsed bound returns a progress snapshot
-with a call-again line, and no unsettled owned Task returns "Nothing in
-flight" as a normal result.
+Task — the active one first, then the queue head. `timeoutSec` uses the
+bounds `freebuff_wait` declares (its description states the default and the
+clamp); a lapsed bound returns a progress snapshot with a call-again line,
+and no unsettled owned Task returns "Nothing in flight" as a normal result.
 
 ## Owner session
 

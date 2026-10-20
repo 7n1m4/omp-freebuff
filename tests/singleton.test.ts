@@ -20,7 +20,7 @@ import {
 } from "../src/singleton";
 import type { TurnRunnerOptions } from "../src/turnRunner";
 import { resolveTarget } from "../src/workspace";
-import { driveGuard, driveReject, guard, pumpUntil, rejectionOf, unwrap, type Guard } from "./helpers/guards";
+import { driveGuard, driveReject, guard, pumpUntil, rejectionOf, unwrapOrThrow, type Guard } from "./helpers/guards";
 import { VirtualClock } from "./helpers/virtualClock";
 import { ScriptedDriver } from "./helpers/scriptedDriver";
 
@@ -1212,7 +1212,7 @@ describe("bounded wait (ADR-0008, scripted drivers, virtual clock)", () => {
     const waited = guard(sing().waitOne(owner, ok.taskId, 500));
 
     await clock.advance(500);
-    const outcome = await unwrap(waited);
+    const outcome = await unwrapOrThrow(waited);
     if (outcome.kind !== "timeout") throw new Error(`expected timeout, got ${outcome.kind}`);
     expect(outcome.details).toMatchObject({ taskId: ok.taskId, phase: "working" });
 
@@ -1278,7 +1278,7 @@ describe("bounded wait (ADR-0008, scripted drivers, virtual clock)", () => {
 
     sing().interrupt(owner, "Interrupted by user");
     const outcome = await driveGuard(clock, waited);
-    if (outcome.kind !== "interrupted") throw new Error(`expected interrupted, got ${outcome.kind}`);
+    if (outcome.kind !== "detached") throw new Error(`expected detached, got ${outcome.kind}`);
     expect(outcome.details).toMatchObject({ taskId: ok.taskId, phase: "working" });
 
     // ADR-0003: the detach keeps the Task running to its real verdict.
@@ -1295,7 +1295,7 @@ describe("bounded wait (ADR-0008, scripted drivers, virtual clock)", () => {
 
     sing().interrupt(owner, "Interrupted by user");
     const outcome = await driveGuard(clock, waited);
-    if (outcome.kind !== "interrupted") throw new Error(`expected interrupted, got ${outcome.kind}`);
+    if (outcome.kind !== "cancelled") throw new Error(`expected cancelled, got ${outcome.kind}`);
     // The snapshot was composed while the record still sat at its position.
     expect(outcome.details).toMatchObject({ taskId: second.taskId, phase: "queued", position: 1 });
     expect(syncErr(() => progressOf(second.taskId))).toMatchObject({ code: "unknown_task" });
@@ -1318,18 +1318,26 @@ describe("bounded wait (ADR-0008, scripted drivers, virtual clock)", () => {
     expect(outcome.details).toMatchObject({ taskId: ok.taskId, phase: "failed", verdict: "cancelled" });
   });
 
-  test("two waits on the same task: one timing out leaves the other to the settle", async () => {
+  test("a second waitOne while a Wait is parked on the task is a caller bug and throws", async () => {
     const ok = await workingSubmit();
-    const short = guard(sing().waitOne(owner, ok.taskId, 100));
-    const long = guard(sing().waitOne(owner, ok.taskId, 60_000));
+    guard(sing().waitOne(owner, ok.taskId, 60_000));
 
-    await clock.advance(100);
-    const timedOut = await unwrap(short);
-    if (timedOut.kind !== "timeout") throw new Error(`expected timeout, got ${timedOut.kind}`);
+    expect(syncErr(() => sing().waitOne(owner, ok.taskId, 60_000))).toEqual({
+      code: "wait_parked",
+      message: "a Wait is already parked on this Task",
+    });
+  });
 
-    drivers[0].endTurn(ANSWER);
-    const outcome = await driveGuard(clock, long);
-    if (outcome.kind !== "settled") throw new Error(`expected settled, got ${outcome.kind}`);
-    expect(outcome.details.answer).toBe(ANSWER);
+  test("a dispose while parked resolves the wait as disposed, timer cleared", async () => {
+    const ok = await workingSubmit();
+    const waited = guard(sing().waitOne(owner, ok.taskId, 60_000));
+
+    sing().dispose();
+    const outcome = await driveGuard(clock, waited);
+    if (outcome.kind !== "disposed") throw new Error(`expected disposed, got ${outcome.kind}`);
+    expect(outcome.details).toMatchObject({ taskId: ok.taskId, phase: "working" });
+
+    // The lapsed bound never fires a second marker: the drain cleared the timer.
+    await clock.advance(60_000);
   });
 });
