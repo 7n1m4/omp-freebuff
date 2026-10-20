@@ -2,7 +2,7 @@
 // Linux is the runtime, so every property here is the Linux behaviour, exercised
 // against real processes and real executables — no stubs, no node_modules, no
 // network, and never the machine-wide plugin directory.
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -76,6 +76,7 @@ describe("resolveApplication", () => {
     const shimDir = join(root, "shims");
     mkdirSync(shimDir, { recursive: true });
     writeFileSync(join(shimDir, "mycli"), "#!/bin/sh\necho hi\n");
+    chmodSync(join(shimDir, "mycli"), 0o755);
     expect(resolveApplication("mycli", { PATH: shimDir, PATHEXT: "" })).toEqual({
       application: join(shimDir, "mycli"),
       args: [],
@@ -88,13 +89,34 @@ describe("resolveApplication", () => {
   });
 
   test("leaves a PATH miss for the spawner to reject", () => {
-    // The property the old CreateProcessW tests protected: the application
-    // handed to the PTY host never resolves to an unexecutable shim, and a
-    // bogus one is NOT silently replaced — the spawn then fails loudly.
+    // A bogus name is NOT silently replaced: it passes through so the spawn
+    // fails loudly, which start() surfaces as a driver rejection.
     const empty = join(root, "empty");
     mkdirSync(empty, { recursive: true });
     expect(resolveApplication("no-such-cli", { PATH: empty, PATHEXT: "" })).toEqual({
       application: "no-such-cli",
+      args: [],
+    });
+  });
+
+  test("skips an unexecutable PATH hit and never hands one to the PTY host", () => {
+    // The property this resolver exists to guarantee: a PATH entry holding a
+    // non-executable regular file is skipped, so the application the driver
+    // hands the PTY host is always genuinely executable. Without the X_OK check
+    // the first such hit would be returned as-is and the spawn would fail with
+    // EACCES even though a real executable sat further down PATH.
+    const shimDir = join(root, "shims");
+    mkdirSync(shimDir, { recursive: true });
+    writeFileSync(join(shimDir, "weakcli"), "#!/bin/sh\necho weak\n");
+    chmodSync(join(shimDir, "weakcli"), 0o644);
+    writeFileSync(join(shimDir, "realcli"), "#!/bin/sh\necho real\n");
+    chmodSync(join(shimDir, "realcli"), 0o755);
+    expect(resolveApplication("weakcli", { PATH: shimDir, PATHEXT: "" })).toEqual({
+      application: "weakcli",
+      args: [],
+    });
+    expect(resolveApplication("realcli", { PATH: shimDir, PATHEXT: "" })).toEqual({
+      application: join(shimDir, "realcli"),
       args: [],
     });
   });

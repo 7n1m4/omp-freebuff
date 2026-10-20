@@ -309,6 +309,9 @@ describe("driver spawn seam", () => {
   test("resolveApplication resolves a bare name over PATH to the executable hit", () => {
     const shimDir = mkdtempSync(join(tmpdir(), "shim-dir-"));
     writeFileSync(join(shimDir, "mycli"), "#!/bin/sh\necho sh shim\n");
+    // A real executable: the resolver's guarantee is that what reaches the PTY
+    // host is executable, so the fixture must set the execute bit.
+    chmodSync(join(shimDir, "mycli"), 0o755);
     const resolved = resolveApplication("mycli", { PATH: shimDir, PATHEXT: "" });
     expect(resolved).toEqual({ application: join(shimDir, "mycli"), args: [] });
   });

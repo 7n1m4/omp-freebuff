@@ -2,7 +2,7 @@
 // runtime; Windows stays working where the branch is cheap (process termination,
 // bare-name application resolution, the plugin directory). Everything else in
 // src/ stays platform-neutral.
-import { statSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -64,11 +64,29 @@ export async function killPid(pid: number): Promise<void> {
   if (pidAlive(pid)) signalPid(pid, "SIGKILL");
 }
 
-// POSIX resolves a bare name over PATH to the executable hit; a name carrying a
-// path separator is already explicit and passes through. A total miss is left
-// for the spawner to reject: the PTY host turns it into an EACCES failure that
-// start() surfaces, so a bogus application never wedges a claimed Lock. Windows
-// keeps the PATHEXT walk — CreateProcessW runs no extension-less sh shim.
+// POSIX resolves a bare name over PATH to the executable hit — executable, not
+// merely a regular file, so a PATH entry holding an unexecutable namesake is
+// skipped and the walk continues; a name carrying a path separator is already
+// explicit and passes through. A total miss is left for the spawner to reject:
+// the PTY host turns it into an EACCES failure that start() surfaces, so a bogus
+// application never wedges a claimed Lock. Windows keeps the PATHEXT walk —
+// CreateProcessW runs no extension-less sh shim, which that walk skips for the
+// same reason.
+// A PATH hit only counts when the file is really executable: on POSIX that is
+// the same guard the Windows branch applies by skipping extension-less sh shims,
+// and without it a first-entry non-executable file would be handed to the PTY
+// host (EACCES) instead of letting the walk reach a real executable further down
+// PATH. isFile() alone accepts any regular file.
+const isExecutableHit = (candidate: string): boolean => {
+  try {
+    if (!statSync(candidate).isFile()) return false;
+    accessSync(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export function resolveApplication(
   application: string,
   env: { PATH?: string; PATHEXT?: string } = process.env as { PATH?: string; PATHEXT?: string },
@@ -79,11 +97,7 @@ export function resolveApplication(
     for (const dir of (env.PATH ?? "").split(":")) {
       if (dir === "") continue;
       const candidate = join(dir, application);
-      try {
-        if (statSync(candidate).isFile()) return { application: candidate, args: [] };
-      } catch {
-        // Not in this PATH entry: keep looking.
-      }
+      if (isExecutableHit(candidate)) return { application: candidate, args: [] };
     }
     return { application, args: [] };
   }
