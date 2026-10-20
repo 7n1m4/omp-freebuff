@@ -26,30 +26,41 @@ export interface ForeignDeps extends Pick<LockDeps, "now" | "isPidAlive"> {
   ownInstancePid?: number;
 }
 
-// Reads freebuff's freebuff-live-*.json records with a liveness check: live means
-// the ownerPid is alive and the expiry is in the future. These records are
-// watched, never trusted as a guard, so this only ever reads — it kills nothing.
+// One reader for freebuff's freebuff-live-*.json records: the parsed objects,
+// with torn, malformed or non-object files skipped. Watched, never trusted as
+// a guard; nothing here kills. readForeignHolders filters these down to the
+// foreign live holders; the turn runner reads our own instance's record for
+// its model.
+export function readLiveRecords(freebuffConfigDir: string): { ownerPid?: unknown; model?: unknown; expiresAt?: unknown }[] {
+  let names: string[];
+  try {
+    names = readdirSync(freebuffConfigDir);
+  } catch {
+    return [];
+  }
+  const records: { ownerPid?: unknown; model?: unknown; expiresAt?: unknown }[] = [];
+  for (const name of names) {
+    if (!name.startsWith("freebuff-live-") || !name.endsWith(".json")) continue;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(join(freebuffConfigDir, name), "utf8"));
+      if (parsed !== null && typeof parsed === "object") records.push(parsed);
+    } catch {
+      continue;
+    }
+  }
+  return records;
+}
+
+// The foreign live holders: live means the ownerPid is alive and the expiry is
+// in the future; our own instance's record is excluded by pid.
 export function readForeignHolders(
   freebuffConfigDir: string,
   deps?: ForeignDeps,
 ): { live: { pid: number; model: string; expiresAt: number }[] } {
   const now = deps?.now ?? Date.now;
   const isPidAlive = deps?.isPidAlive ?? pidAlive;
-  let names: string[];
-  try {
-    names = readdirSync(freebuffConfigDir);
-  } catch {
-    return { live: [] };
-  }
   const live: { pid: number; model: string; expiresAt: number }[] = [];
-  for (const name of names) {
-    if (!name.startsWith("freebuff-live-") || !name.endsWith(".json")) continue;
-    let raw: Partial<{ ownerPid: unknown; model: unknown; expiresAt: unknown }>;
-    try {
-      raw = JSON.parse(readFileSync(join(freebuffConfigDir, name), "utf8"));
-    } catch {
-      continue;
-    }
+  for (const raw of readLiveRecords(freebuffConfigDir)) {
     if (typeof raw.ownerPid !== "number" || typeof raw.model !== "string" || typeof raw.expiresAt !== "number") {
       continue;
     }

@@ -5,7 +5,7 @@
 // killed and dropped, and the next Task starts fresh. The deadline/frozen
 // verdicts come from the runner's own watchdog (#21); cancel() (#22) stops the
 // run through this same settle funnel under `cancelled`.
-import { appendFileSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeTaskArchive } from "./archive";
 import {
@@ -21,7 +21,7 @@ import { COUNTDOWN_REGEX, END_SESSION } from "./protocol/markers";
 import { classifyScreen, errorLines, EXCERPT_LINES, freezeKey, screenExcerpt } from "./protocol/screen";
 import { partialAnswer as partialAnswerOf, type StepFeed, type TurnBaseline } from "./protocol/chatStore";
 import { enterWhitelisted } from "./protocol/whitelist";
-import { readForeignHolders } from "./status";
+import { readForeignHolders, readLiveRecords } from "./status";
 import { ensureJunction, readJunctionTarget } from "./workspace";
 
 // The nine-set from CONTEXT. This runner's own paths produce ack_missing,
@@ -274,7 +274,7 @@ export class TurnRunner {
     // unwinds silent; no spawn, no second write. Same guard at every later
     // settle path below.
     if (turn.abandoned) throw ABANDONED;
-    const { prompt, startedAt, taskId } = turn;
+    const { prompt } = turn;
     const phases = turn.phases;
     // Run-scoped error warnings (#21): the watcher appends here, the outcome
     // carries the accumulation on settle. Per-run by construction, so a later
@@ -295,10 +295,7 @@ export class TurnRunner {
       // A cancel that arrived between run() and the Lock claim: nothing was
       // spawned, the funnel still archives the empty settle.
       if (this.cancelRequested) {
-        const outcome = this.cancelledOutcome(null);
-        await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
-        this.dropDriver();
-        return outcome;
+        return this.settleTurn(turn, baseline, this.cancelledOutcome(null), true, warnings);
       }
       // An abandon that landed during the claim: nothing spawns, nothing writes.
       if (turn.abandoned) throw ABANDONED;
@@ -342,9 +339,7 @@ export class TurnRunner {
         } else {
           outcome = { ok: false, verdict: "driver_error", message: `settle failed: ${settled.reason}`, screenExcerpt: excerpt };
         }
-        await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
-        this.dropDriver();
-        return outcome;
+        return this.settleTurn(turn, baseline, outcome, true, warnings);
       }
       const reused = settled.state === "ready";
 
@@ -367,10 +362,7 @@ export class TurnRunner {
         if (turn.abandoned) throw ABANDONED;
         // The stop landed mid-submit: the run was cancelled, not unacked.
         if (this.cancelRequested) {
-          const outcome = this.cancelledOutcome(baseline);
-          await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
-          this.dropDriver();
-          return outcome;
+          return this.settleTurn(turn, baseline, this.cancelledOutcome(baseline), true, warnings);
         }
         await driver.cancelActive();
         // Abandon checkpoints (#23): an abandon landing inside cancelActive or
@@ -385,9 +377,7 @@ export class TurnRunner {
           message: "no ack within two windows; the submit was cancelled",
           screenExcerpt,
         };
-        await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
-        this.dropDriver();
-        return outcome;
+        return this.settleTurn(turn, baseline, outcome, true, warnings);
       }
       phase("working");
 
@@ -415,11 +405,8 @@ export class TurnRunner {
         // The abandon outranks whatever the race produced: the kill it caused
         // typically reads as crashed, and teardown already archived the Task.
         if (turn.abandoned) throw ABANDONED;
-        if (warnings.length > 0) outcome.warnings = warnings;
-        await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
         // Kill and yield on every fatal verdict; no_answer keeps the Instance for reuse.
-        if (!outcome.ok && outcome.verdict !== "no_answer") this.dropDriver();
-        return outcome;
+        return this.settleTurn(turn, baseline, outcome, !outcome.ok && outcome.verdict !== "no_answer", warnings);
       } finally {
         await watchdog.stop();
       }
@@ -431,20 +418,13 @@ export class TurnRunner {
       // ABANDONED out so the singleton leaves the Task to teardown.
       if (turn.abandoned) throw ABANDONED;
       if (this.cancelRequested) {
-        const outcome = this.cancelledOutcome(baseline);
-        if (warnings.length > 0) outcome.warnings = warnings;
-        await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
-        this.dropDriver();
-        return outcome;
+        return this.settleTurn(turn, baseline, this.cancelledOutcome(baseline), true, warnings);
       }
       const outcome: TurnOutcome =
         error instanceof FreebuffDriverError && error.reason === "process_exited"
           ? { ok: false, verdict: "crashed", message: messageOf(error) }
           : { ok: false, verdict: "driver_error", message: messageOf(error) };
-      if (warnings.length > 0) outcome.warnings = warnings;
-      await this.writeArchive(prompt, startedAt, phases, baseline, outcome, taskId);
-      this.dropDriver();
-      return outcome;
+      return this.settleTurn(turn, baseline, outcome, true, warnings);
     }
   }
 
@@ -669,6 +649,24 @@ export class TurnRunner {
     };
   }
 
+  // One settle site for every exit path (the funnel): warnings attach, the
+  // archive is written best-effort, and the Instance disposition runs — dropped
+  // on submit-phase failures and fatal verdicts, kept for reuse on success and
+  // no_answer. Warnings are empty until the error-log watcher arms at the Ack,
+  // so early exits carry none.
+  private async settleTurn(
+    turn: ActiveTurn,
+    baseline: TurnBaseline | null,
+    outcome: TurnOutcome,
+    drop: boolean,
+    warnings: string[],
+  ): Promise<TurnOutcome> {
+    if (warnings.length > 0) outcome.warnings = warnings;
+    await this.writeArchive(turn.prompt, turn.startedAt, turn.phases, baseline, outcome, turn.taskId);
+    if (drop) this.dropDriver();
+    return outcome;
+  }
+
   // The settling phase's Task archive write, on every settle, success included
   // (ADR-0003; a Task dropped by LockBusyError never got here, so it archives
   // nothing). All capture reads happen while the driver is still held: every
@@ -730,21 +728,12 @@ export class TurnRunner {
 
   // The live-slot record naming this pid carries the model the Instance runs;
   // no record or an unreadable store reads as null. Same freebuff-live-*.json
-  // family readForeignHolders watches for foreign holders.
+  // family readForeignHolders filters for foreign holders.
   private modelOf(instancePid: number | null): string | null {
     if (instancePid === null) return null;
     try {
-      for (const name of readdirSync(this.options.freebuffConfigDir)) {
-        if (!name.startsWith("freebuff-live-") || !name.endsWith(".json")) continue;
-        try {
-          const record = JSON.parse(readFileSync(join(this.options.freebuffConfigDir, name), "utf8")) as {
-            ownerPid?: unknown;
-            model?: unknown;
-          };
-          if (record.ownerPid === instancePid && typeof record.model === "string") return record.model;
-        } catch {
-          // A torn record skips; another may match.
-        }
+      for (const record of readLiveRecords(this.options.freebuffConfigDir)) {
+        if (record.ownerPid === instancePid && typeof record.model === "string") return record.model;
       }
     } catch {
       // No readable store: no model.
