@@ -1,0 +1,48 @@
+    removed probe_tmp.ts. Let me just verify git status to ensure no leftover. Actually final answer concise. But check leftover file quickly.                  
+                                                                                                                                                                
+  $ cd repo && git status --short && ls probe_tmp.ts 2>/dev/null; echo "done"                                                                                   
+  M  README.md                                                                                                                                                  
+  M  docs/spec.md                                                                                                                                               
+  M  src/messages.ts                                                                                                                                            
+  M  src/state.ts                                                                                                                                               
+  M  test/procedure.test.ts                                                                                                                                     
+  Show 2 more lines                                                                                                                                             
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    Clean. Only the six reviewed files staged; probe removed. Report is final.                                                                                  
+                                                                                                                                                                
+  Deliverable check complete.                                                                                                                                   
+                                                                                                                                                                
+  What was requested: re-review the staged work after the four fixes, Standards lens, report under 500 words with  file:line  citations. Done. Report posted    
+  above.                                                                                                                                                        
+                                                                                                                                                                
+  Verified against the actual artifacts:                                                                                                                        
+  -  git diff HEAD  inspected in full (6 files: README.md, docs/spec.md, src/messages.ts, src/state.ts, test/procedure.test.ts, test/state.test.ts).            
+  -  bun test  → 277 pass, 0 fail (exit 0).                                                                                                                     
+  -  bun run typecheck  ( tsc --noEmit ) → exit 0.                                                                                                              
+  - Fix 1 (extraction) confirmed byte-equal  $append  error strings by direct probe of  validatePatch .                                                         
+  - Fix 2, 3, 4 checked against code and spec text.                                                                                                             
+                                                                                                                                                                
+  Result: 1 residual finding — docs/spec.md:142 sibling-key clause still over-claims;  checkDeepPatch  (src/state.ts:155-157) only guards payload type under    
+  unknown keys, so  validateArrayOp 's sibling rejection (src/state.ts:174-181) never fires there while  mergeState  (src/state.ts:286-295) still drops the     
+  sibling silently. Half of fixed finding #2.                                                                                                                   
+                                                                                                                                                                
+  Checks that failed / could not run: none. The finding is a spec/code mismatch, not a test failure.                                                            
+                                                                                                                                                               █
+  Limitations: the finding is pre-existing for  $append  and a judgement call, not a test-enforced violation; review-only task, so no repair applied (         █
+  reporting, not editing, was the request). No files changed by me; probe script removed; working tree holds only the six reviewed files.                      █
+                                                                                                                                             ⎘ • 1m 56s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Auto top-up                                                                                                                                             Ad │ 
+ │ Don't stall mid-task.                                                                                                                                      │ 
+ │  Top up  freebuff.com                                                                                                                                      │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+ 50m left · 60.3K (6%)                                                                                                                           ✕ End session  
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: Work inside the repo/ folder in the current directory. Re-   
+ review the uncommitted (staged) work af...                                                                                                                     
+ ← for history · ? for help                                                                                                                                     

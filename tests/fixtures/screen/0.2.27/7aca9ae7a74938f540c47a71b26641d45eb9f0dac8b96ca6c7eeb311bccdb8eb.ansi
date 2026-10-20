@@ -1,0 +1,48 @@
+  test/procedure.test.ts:173 .                                                                                                                                  
+                                                                                                                                                                
+  Advisory (judgement call, not a violation)                                                                                                                    
+                                                                                                                                                                
+  The "operator name" concept lives at four sites:  src/state.ts:165 ,  :233-234 ,  :252-253 , plus the two predicates. Adding a third operator would need      
+  edits in all. Narrowed by  docs/spec.md:376  declaring positional editing out of scope, so no action needed now. Flag only if a third operator is ever        
+  specified.                                                                                                                                                    
+                                                                                                                                                                
+  No blocking findings.                                                                                                                                         
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The task: final Standards re-review, report under 500 words. I already did it. The completion check asks to compare deliverables with request.              
+    Re-review: done via git diff HEAD, verified suite + typecheck. Report delivered PASS under 500 words. No repairs made, so no need to rerun. Files           
+    unchanged since checks. Provide concise final answer. Let me check the report word count roughly — under 500. Yes. Final answer concise.                    
+                                                                                                                                                                
+  Task complete. Standards re-review delivered: PASS.                                                                                                           
+                                                                                                                                                                
+  What was verified:                                                                                                                                            
+  -  git diff HEAD  read in full — scope is  $remove -only (README.md, docs/spec.md, src/messages.ts, src/state.ts, test/procedure.test.ts, test/state.test.    
+  ts).                                                                                                                                                          
+  - Prior Duplicated Code finding confirmed closed:  siblingOpError  ( src/state.ts:144 ) called from both  checkDeepPatch  ( :168 ) and  validateArrayOp  (    
+  :187 ).                                                                                                                                                       
+  - Spec ↔ code agreement on value-keyed removal, no-materialize, malformed-payload rejection on both roads, object-key rejection, hazard-key recursion, and    
+  both-ops sibling rejection.                                                                                                                                   
+  - Glossary/convention conformance, comment quality, test independence.                                                                                        
+  - One advisory nit (op-name concept spread over four sites), non-blocking, scoped out by  docs/spec.md:376 .                                                  
+                                                                                                                                                                
+  Checks run, with exit status preserved:                                                                                                                      █
+  -  bun test  → 278 pass, 0 fail (exit 0).                                                                                                                    █
+  -  bunx tsc --noEmit  → exit 0.                                                                                                                              █
+                                                                                                                                                               █
+  No files were edited during this pass, so no re-run was needed after the initial checks. No failures and no blocked checks. Limitation: review is a          █
+  judgement-grade Standards assessment, not a mechanical gate; the advisory item is the only residual observation and is deliberate, not a defect.             █
+                                                                                                                                             ⎘ • 1m 35s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Auto top-up                                                                                                                                             Ad │ 
+ │ Don't stall mid-task.                                                                                                                                      │ 
+ │  Top up  freebuff.com                                                                                                                                      │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+ 47m left · 73.2K (7%)                                                                                                                           ✕ End session  
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: Work inside the repo/ folder in the current directory. Final 
+ Standards re-review: run `git diff H...                                                                                                                        
+ ← for history · ? for help                                                                                                                                     

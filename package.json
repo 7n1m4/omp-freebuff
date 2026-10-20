@@ -1,0 +1,21 @@
+{
+  "name": "pi-freebuff",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "omp": {
+    "extensions": ["./src/index.ts"]
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "18.12.2",
+    "@oh-my-pi/pi-ai": "18.12.2",
+    "@oh-my-pi/pi-natives": "18.12.2",
+    "@oh-my-pi/pi-utils": "18.12.2",
+    "@types/bun": "^1.2.23",
+    "typescript": "^5.9.0"
+  }
+}

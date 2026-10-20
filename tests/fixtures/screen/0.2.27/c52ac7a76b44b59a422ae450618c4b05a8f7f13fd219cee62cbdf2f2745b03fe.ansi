@@ -1,0 +1,48 @@
+  575 ), additionalProperties-as-schema accept/reject with member path ( :221-266 ), degraded-step projection contents ( test/projection.test.ts:754 ,  test/   
+  procedure.test.ts:622 ), notice on every degraded step with re-arm on the first projected step ( :640,649 ), degraded step advancing neither retry nor        
+  idle counters ( :664 ), blocked-batch adapter witness projecting head + notice instead of ordinary history ( test/adapter-projection.test.ts:220 ).           
+  Not realized: zstate knowledge bag in the state core (a3).                                                                                                    
+                                                                                                                                                                
+  Two requirements are unshipped/uncovered, not merely under-tested: the 0.3.0 version landing and the bag-in-core witness.                                     
+                                                                                                                                                                
+  ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮   
+  │ Prevent PR Bugs With Greptile AI                                                                                                                     Ad │   
+  │ Review pull requests with full codebase context to catch bugs beyond the diff and implement team-specific standards.                     greptile.com ↗ │   
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯   
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The task is a read-only review. I've completed it. Let me verify final deliverables: report under 500 words, findings cite file:line, quote spec            
+    lines, clean result = PASS otherwise findings. I delivered that. No files edited (read-only respected). Checks run: bun test (312 pass), tsc clean.         
+    Let me just confirm I didn't edit anything and word count. My report is roughly ~450 words. Good. No further tool calls needed. Provide concise final       
+     answer.                                                                                                                                                    
+                                                                                                                                                                
+  Deliverable complete: read-only review, no files edited.                                                                                                      
+                                                                                                                                                                
+  Verified:                                                                                                                                                     
+  - Spec fetched ( gh issue view 31 ), full diff inspected across src/, test/, docs/, skills/.                                                                  
+  -  bun test : 312 pass / 0 fail (exit 0).  bun run typecheck : clean (exit 0).                                                                                
+  - Report is under 500 words, every finding cites  file:line  and quotes the spec line.                                                                        
+                                                                                                                                                                
+  All 9 Testing-Decisions claims checked against the diff. 8 realized; 1 unrealized — "zstate knowledge bag landing in the state core" has no test. Findings    
+  reported: (a) missing v0.3.0 bump ( package.json:3 ), no corrected example on rejection, bag-in-core claim untested; (b) no scope creep; (c) ADR 0005's       
+  "complete pairs that survive" unrepresentable in  DegradedProjection  ( src/projection.ts:13 ), minor misleading object-key operator message.                 
+                                                                                                                                                                
+  No checks failed. No repairs made — task was explicitly a read-only review.                                                                                   
+                                                                                                                                                                
+  Remaining limitations:  gh  metadata (issue comments) only; the version-bump and bag-witness items are unshipped/uncovered rather than under-tested, so a    ▄
+  clean  PASS  is not warranted.                                                                                                                               █
+                                                                                                                                              ⎘ • 3m 3s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ The agent that wrote it should not be the only thing checking it.                                                                                       Ad │ 
+ │ Review uncommitted changes and find bugs in your codebase with CodeRabbit's full repository context.                                                       │ 
+ │  Start Reviewing  coderabbit.ai                                                                                                                            │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+ 49m left · 96.7K (9%)                                                                                                                           ✕ End session  
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: Work inside the repo/ folder in the current directory.       
+ Review the committed work in this repo: ru...                                                                                                                  
+ ← for history · ? for help                                                                                                                                     

@@ -1,0 +1,48 @@
+    report's claims are accurate (I verified via greps and bun run). Tests: 313 pass, exit code 0 — I ran `bun test 2>&1 | tail -25` which pipes; exit          
+    status of bun test was masked by tail. The system prompt warns to preserve exit status. Let me rerun with pipefail to confirm the suite passes with a       
+     real exit status. Also confirm git status. That's a legit missing check: I claimed "313 tests pass" based on piped output showing "0 fail" — that's        
+    still evidence, but let's run with status capture to be rigorous.                                                                                           
+                                                                                                                                                                
+  $ cd repo && set -o pipefail && bun test 2>&1 | tail -5; echo "bun test exit: $?"; echo "=== status ==="; git status --porcelain | head (3m timeout)          
+   313 pass                                                                                                                                                     
+   0 fail                                                                                                                                                       
+   799 expect() calls                                                                                                                                           
+  Ran 313 tests across 9 files. [6.25s]                                                                                                                         
+  bun test exit: 0                                                                                                                                              
+  Show 1 more line                                                                                                                                              
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    Exit 0 with pipefail, working tree clean (no edits). Good. Final concise answer.                                                                            
+                                                                                                                                                                
+  Deliverables match the request. Final state:                                                                                                                  
+                                                                                                                                                                
+  Verified                                                                                                                                                      
+  - Full suite:  bun test  → 313 pass, 0 fail, exit 0 under  set -o pipefail  (exit status preserved, not just filtered output).                                
+  - Working tree clean ( git status --porcelain  empty) — review was read-only, no files edited.                                                                
+  - Findings stand on re-run evidence: rejection texts confirmed by executing  validatePatch  on the three shapes; degraded head-only paths confirmed at        
+  src/projection.ts:121,126,161  and pinned by  test/projection.test.ts:787-796 ; surviving-pairs wording confirmed at  CONTEXT.md:85  and  docs/adr/0005-      
+  projection-degrades-in-place.md:3 ; witness test at  test/adapter-projection.test.ts:220-231 ; version at  package.json:3 .                                   
+  - Report delivered under the 500-word cap, findings cite  file:line , spec lines quoted.                                                                      
+                                                                                                                                                                
+  Result: FAIL — 3 findings (US2 partial on two operator-shape rejection texts; ADR 0005 / CONTEXT.md promise surviving pairs the code can never emit; both     
+  above are the residual of the previously flagged items 1 and 4). No scope creep found; the other two re-checks pass.                                          
+                                                                                                                                                                
+  Limitations                                                                                                                                                   
+  - Cache/cost claims (US12–US14) are not measurable from this diff; I did not attempt token-accounting verification.                                           
+  -  gh issue view 31  is the only spec source used; no external tracker cross-check.                                                                          █
+  - Report was not committed (read-only review, as instructed).                                                                                                █
+                                                                                                                                              ⎘ • 4m 7s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Compare AI Reviewers By Bug-Finding Accuracy                                                                                                            Ad │ 
+ │ Use Greptile to compare AI reviews with side-by-side code diffs and real bug detection.                                                                    │ 
+ │  Try Greptile  greptile.com                                                                                                                                │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+ 41m left · 83.3K (8%)                                                                                                                           ✕ End session  
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: Work inside the repo/ folder in the current directory. Re-   
+ review the committed work in this repo:...                                                                                                                     
+ ← for history · ? for help                                                                                                                                     

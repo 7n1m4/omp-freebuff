@@ -1,0 +1,48 @@
+  mixed shape.                                                                                                                                                  
+  -  checkDeepPatch  op detection keys off  "$append" in value  /  "$remove" in value , not the predicate, so a non-array payload still produces the            
+  malformed-op error rather than falling through to literal merge. Matches spec.                                                                                
+  - Duplication of  validateArrayOp 's doc comment against  checkDeepPatch 's comment is justified: both state the why (silent drop), and each is local to      
+  its function.                                                                                                                                                 
+  - No Feature Envy, Primitive Obsession, Repeated Switches, or Speculative Generality in the new code.  isRemoveOp  mirrors  isAppendOp ; symmetric, not       
+  speculative.                                                                                                                                                  
+                                                                                                                                                                
+  Verdict: finding above, fix or consciously accept. Everything else PASS.                                                                                      
+                                                                                                                                                                
+  Docs/conventions, glossary fit fine: no spec-section citations in comments, no paths, why-comments only,  $remove  semantics match spec.md and CONTEXT.md     
+  language.                                                                                                                                                     
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The task was re-review. I did it. Deliverable: report under 500 words, cite file:line, this is a review (read-only). I ran tests and typecheck and          
+    confirmed. No repairs were requested. Final answer concise. I should confirm the report meets requirements: under 500 words, cite file:line. Yes.           
+    Nothing more needed. Give concise final answer. The caveman style. Keep short. Note: my report was the deliverable. Confirm verification. End.              
+                                                                                                                                                                
+  Deliverable = Standards re-review report, not code changes. No repair requested; the fix under review was already in place.                                   
+                                                                                                                                                                
+  Verified against request:                                                                                                                                     
+  - Ran  git diff HEAD  in  repo/ ; read the residual-finding fix in  src/state.ts ,  docs/spec.md ,  test/state.test.ts ,  test/procedure.test.ts .            
+  - Confirmed closure:  checkDeepPatch  ( src/state.ts:154-168 ) now rejects a non-array payload and riders for both operators;  validateArrayOp  ( src/        
+  state.ts:175-196 ) covers the declared array key. Spec convention updated ( docs/spec.md:141-142 ). Tests pin unknown-key deep sibling rejection for          
+  $append  and  $remove  ( test/state.test.ts:461-472 ).                                                                                                        
+  - Checks run:  bun test  → 278 pass, 0 fail, 695 expect.  bun run typecheck  → exit 0, no output. Both exit 0; output not masked (tail after full run,        
+  exit status preserved).                                                                                                                                       
+  - Report cites  file:line  and stays under 500 words.                                                                                                        █
+                                                                                                                                                               █
+  Reported finding: Duplicated Code between  src/state.ts:158-163  and  src/state.ts:179-186  (identical  extraKeys  block plus error string). Judgement       █
+  call, not tooling-enforced; no change made because the request was review-only.                                                                              █
+                                                                                                                                                               █
+  Limitations: none blocking. The duplication finding is advisory; left for the author to fix or accept, since the task was to re-review, not to edit.         █
+                                                                                                                                                ⎘ • 54s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Turn audio into searchable transcripts                                                                                                                  Ad │ 
+ │ Streamline your technical documentation and code reviews with Transkriptor's developer transcription integrations.                                         │ 
+ │  Try Transkriptor  textintelfze.pxf.io                                                                                                                     │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+ 48m left · 41.4K (4%)                                                                                                                           ✕ End session  
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: Work inside the repo/ folder in the current directory. Re-   
+ review the uncommitted (staged) work af...                                                                                                                     
+ ← for history · ? for help                                                                                                                                     

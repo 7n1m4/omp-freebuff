@@ -1,0 +1,48 @@
+  -  test_visit_table.py:542-543  comment names the retired artifacts ("cell kinds, solid fills, the dashed fitted style"). The test exists to assert their     
+  absence and spec §6 mandates those assertions, so naming them is required, not leakage. Keep.                                                                 
+  -  table.py  latest-record fold duplication across  table.py /caller — accepted.                                                                              
+  -  table.py:145  issue #43,  render.py:50  issue #46 — sanctioned short issue pointers.                                                                       
+                                                                                                                                                                
+  Result                                                                                                                                                        
+                                                                                                                                                                
+  Not a clean PASS (one standards finding, pre-existing):  tools/test_visit_table.py:450 . Everything the diff introduces is compliant; rerun after deleting    
+  the  docs §4:   prefix.                                                                                                                                       
+                                                                                                                                                                
+  Suggested followups:                                                                                                                                          
+  → Fix line 450                                                                                                                                                
+  → Scan rest of repo                                                                                                                                           
+  → Browser-check render                                                                                                                                        
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    This was a review-only task ("Verify and report"). I completed it. The final completion check asks me to ensure deliverables match. The task was to         
+    review and report, not to fix. I reported. No repair needed since the task said "Verify and report." But the completion check suggests if a necessary       
+     check/repair is missing, do it. The user's request was a review with a report. I delivered. I don't need to fix line 450 because the task is a             
+    review; the user asked "Verify and report." I'll give a concise final answer. Nothing more needed. No files edited by me. State limitations.                
+                                                                                                                                                                
+  Review-only task; no files edited. Deliverable is the report above.                                                                                           
+                                                                                                                                                                
+  Verified:                                                                                                                                                     
+  -  git diff HEAD  scope = 4 tools files ( table.py ,  cli.py ,  render.py ,  test_visit_table.py ); docs/model/bench/baseline/src untouched, as spec          
+  requires.                                                                                                                                                     
+  - Prior findings 1-3, the rename, and the  test_render_legend... / step_features_for  prose fixes are applied as claimed.                                     
+  - Retired vocabulary (stamp day, fitted cell, dry carryover, solid fills, перенесено) absent from the diff; sanctioned terms used exactly.                    
+  -  pytest tools : 110 passed (exit 0, no skips shown).                                                                                                        
+  - Generator end-to-end: 14 stations, 5 days, payload carries  gen  day + 2 following days, «завтра» divider present.                                          
+                                                                                                                                                                
+  Finding reported:  tools/test_visit_table.py:450  — surviving bare  docs §4:  spec citation (pre-existing, not introduced by the diff).                       
+                                                                                                                                                               ▄
+  Limitations: Review judged standards/smells only; I did not edit the flagged line (task said verify and report). Browser-render behavior was covered by      █
+  the suite's node scenarios, not a live browser.                                                                                                              █
+                                                                                                                                            ⎘ • 10m 11s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Join us                                                                                                                                                 Ad │ 
+ │ Discord invite: 15 Freebucks                                                                                                                               │ 
+ │  Join  freebuff.com                                                                                                                                        │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│
+ │ │     …                │                                                                                                                                   ││
+ │▍AEnter a coding task or / for commands                                                                                                                     ││
+                                                                                                                                                              │╰
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: New chat                                                     
+ ← for history · ? for help                                                                                                                                     

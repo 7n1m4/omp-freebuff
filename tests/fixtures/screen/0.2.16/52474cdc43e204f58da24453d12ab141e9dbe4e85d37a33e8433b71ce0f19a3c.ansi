@@ -1,0 +1,48 @@
+  - Marker rows: one y=0 per hour, dedup, read-wins, window filter ( :157 – 174 ).                                                                              
+  - Observed semantics:  n>0 ,  fitted=false , misses counted ( :325 , :342 ).                                                                                  
+  - HARMONICS 3 + rewritten rationale ( :59 ).                                                                                                                  
+  - Strip: title +  <ol id="rank">  gone; sliders + from–to readout stay ( visit_table.py  render, tests pass).                                                 
+  - Persistence clamped ( Math.min/max ) and silently degraded ( try/catch ).                                                                                   
+  - In-range =  stepIdx[hour]  within  [winLo,winHi] , columns dimmed ( :447 – 453 ).                                                                           
+  - Vanished cells hatched, number struck, hover unchanged;  c.fitted || c.van  suppresses heat.                                                                
+  - Docs: spec case 26, visit-score-table, ADR-0003 all updated;  CONTEXT.md  untouched.                                                                        
+  - Overnight grace absent; no day-of-week; no backfill before markers; no monitor changes.                                                                     
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The task was a review report. I've completed it. Deliverable is the report under 500 words. Let me verify word count roughly — it's within. Nothing         
+    to repair; this is a review. Let me confirm the report meets format: "Report under 500 words: clean result = PASS; findings cite file:line". I gave         
+    FINDINGS with file:line. Done. Provide concise final answer.                                                                                                
+                                                                                                                                                                
+  Review complete. Deliverable: the Spec-lens report above (under 500 words, findings with  file:line ).                                                        
+                                                                                                                                                                
+  Verified against request:                                                                                                                                     
+  - Fetched issue #42; treated its sections as spec.                                                                                                            
+  - Ran  git diff HEAD ; reviewed all 5 changed files.                                                                                                          
+  - Checked each exact semantic named in the lens.                                                                                                              
+  - Confirmed the key bug empirically: read+marker same hour → training row  y=1  but cell  {van:True}  (hatched dry), contradicting read-wins.                 
+                                                                                                                                                                
+  Checks run:                                                                                                                                                   
+  -  pytest -k "not real_fit"  → 35 passed, 1 deselected (exit 0).                                                                                              
+  -  test_main_real_fit_end_to_end  not run — needs  bambi / nutpie  (not installed). Reported as a limitation, not a pass.                                     
+                                                                                                                                                                
+  Result: FINDINGS (3) — not PASS.                                                                                                                              
+  1. (c) Badge ignores read-wins:  tools/visit_table.py:322 , :334  vs guard at  :173 .                                                                         
+  2. (c) Badge ignores monitoring window:  tools/visit_table.py:322  vs  :170 .                                                                                 
+  3. (a) Missing required test pin for 3 harmonic pairs (Testing Decisions); code  HARMONICS = 3  correct.                                                      
+                                                                                                                                                                
+  All other lens items verified clean. No repairs made or needed — this was a review, not an implementation.                                                    
+                                                                                                                                             ⎘ • 2m 28s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Auto top-up                                                                                                                                             Ad │ 
+ │▍Don't stall mid-task.                                                                                                                                      │ 
+ │  Top up  freebuff.com                                                                                                                                      │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+ 41m left · 59.9K (6%)                                                                                                                           ✕ End session  
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: Work inside the repo/ folder in the current directory.       
+ Review the uncommitted work: run `git diff...                                                                                                                  
+ ← for history · ? for help                                                                                                                                     

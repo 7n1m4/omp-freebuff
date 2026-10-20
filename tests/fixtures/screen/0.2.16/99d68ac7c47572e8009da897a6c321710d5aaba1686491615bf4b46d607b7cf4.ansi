@@ -1,0 +1,48 @@
+  - Ranking strip: title +  <ol>  gone  visit_table.py:397-401 ; sliders +  rank-from/rank-to  readout kept.                                                    
+  - Slider persistence:  localStorage   :465-466 ,  try/catch   :462/475 , clamp  Math.min/Math.max   :478 , namespace  visit-table .                           
+  - In-range = displayed  stepIdx[h]  within  [winLo,winHi] :  :455 ; cells dimmed  :427 ; CSS opacity  :380 .                                                  
+  - Van cell: hatch + dark-red CSS  :384-385 ; heat suppressed  :430 ; struck-through  <s>   :431 ; hover title unchanged  :432 .                               
+  - Docs:  fuel-monitor-spec.md:242  (case 26 trains as negative),  visit-score-table.md:14,16,24,44,46,50,62 ,  adr/0003:3,5,7 .  CONTEXT.md  untouched (      
+  git status).                                                                                                                                                  
+  - Rejected/excluded: no overnight-grace rule, no day-of-week terms, no pre-marker backfill — grep clean.                                                      
+  - Fixed seed 42  visit_table.py:69 ; markers-only log still named-errors "no reads" ( main   :515 , test  test_visit_table.py:373 ).                          
+                                                                                                                                                                
+  Minor non-findings (pre-existing, not in scope, no action):  stepIdx[h]  can be  -1  for a pathologically non-quarter-aligned window end, so  cellHtml        
+  would index  [-1]  ( visit_table.py:412,440 ); cross-day a marker on day A still badges an hour that has a read on day B — both correct under the spec's      
+  per- (station, day, hour)  dedup and hour-aggregated cells. Nothing new beyond the prior round.                                                               
+                                                                                                                                                                
+  skipped: nothing. No blocker.                                                                                                                                 
+                                                                                                                                                                
+  • Thinking                                                                                                                                                    
+    The task was a re-review (Spec lens). I delivered the report. Final completion check: verify deliverables match request. The request was a review           
+    report under 500 words. I've done it and tests passed. No repairs needed. I should give a concise final answer. Since no edits were made (review            
+    only), no rerun needed beyond the pytest I ran against final files. Confirm. Actually, the user asked "Re-review after fixes: review the uncommitted        
+    work". So the deliverable is the review report. It's complete. Give concise final answer.                                                                   
+                                                                                                                                                                
+  Deliverable complete: spec-lens review of uncommitted work vs issue #42, report under 500 words.                                                              
+                                                                                                                                                                
+  Verified                                                                                                                                                      
+  - Read spec via  gh issue view 42 ; diff via  git diff HEAD  (5 files, +234/−59). No source edits made by me, so no repairs needed.                           
+  - Ran the documented check against the final files:  uv run --python 3.12 --with pytest --with bambi --with nutpie python -m pytest tools/test_visit_table.   
+  py -q  →  38 passed, 1 warning in 13.33s  (exit 0). Warning is a pre-existing pandas/bambi deprecation, not a failure.                                        
+  - Confirmed prior-round findings (badge from training rows  visit_table.py:327 ; read-wins  :173 ; badge-collision test; 3-pair basis shape test) and         
+  mapped all 24 stories to implementation; docs updated,  CONTEXT.md  untouched, rejected paths absent.                                                         
+                                                                                                                                                                
+  Result: PASS — no missing/partial, scope-creep, or wrong-implementation findings. Two pre-existing edge-case notes (non-quarter-aligned  stepIdx = -1 ;      █
+  cross-day marker badge) reported as non-findings since neither violates the spec.                                                                            █
+                                                                                                                                                               █
+  Limitations: only the pytest suite was run; no live model/HTML browser check of the slider dimming or localStorage behavior (spec tests assert the emitted   █
+  markup structurally). Nothing blocked.                                                                                                                       █
+                                                                                                                                             ⎘ • 5m 38s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ Auto top-up                                                                                                                                             Ad │ 
+ │ Don't stall mid-task.                                                                                                                                      │ 
+ │  Top up  freebuff.com                                                                                                                                      │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│
+ │ │     …                │                                                                                                                                   ││
+ │▍AEnter a coding task or / for commands                                                                                                                     ││
+                                                                                                                                                              │╰
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯╯
+ DeepSeek V4.1 Flash • high · ~\AppData\Local\Temp\freebuff-ws-a0235ecf · /model to change · Chat: New chat                                                     
+ ← for history · ? for help                                                                                                                                     

@@ -1,0 +1,3 @@
+{"type":"user","parts":["add health endpoint"]}
+{"type":"end","role":"agent","shouldEndTurn":true,"data":{"fullResponse":"Added /health returning ok."}}
+{"msg":"Main prompt finished"}

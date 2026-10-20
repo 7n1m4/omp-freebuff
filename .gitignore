@@ -1,0 +1,7 @@
+# Dependency installs. The repo has no build today; probe branches install their own deps.
+node_modules/
+probes/*/node_modules/
+
+# Local scratch: smoke/capture runs and issue dumps. Reviewed captures live under captures/.
+.probe/
+.scratch/
