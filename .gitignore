@@ -5,3 +5,6 @@ probes/*/node_modules/
 # Local scratch: smoke/capture runs and issue dumps. Reviewed captures live under captures/.
 .probe/
 .scratch/
+
+# The scheduled Keeper tees its progress here (scripts/keeper.ts).
+keeper.log
