@@ -212,7 +212,7 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
       "One Task runs at a time, queue depth 4; only the owning session's calls are answered. " +
       "For long independent Tasks only (multi-file refactor, migration, self-contained feature) - not quick " +
       "in-session work. Independent Tasks: submit them all in one turn; they run FIFO, one at a time. " +
-      "Esc aborts the call, not a working Task (it detaches).",
+      "Esc stops the call, not a working Task (it detaches).",
     parameters: runParams,
     loadMode: "essential",
     execute: async (_toolCallId, { prompt }, signal, _onUpdate, ctx) => {
@@ -285,7 +285,7 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
       "Block until a freebuff Task settles: returns the verbatim answer when done, the failure line when failed. " +
       "Omit taskId to wait for the oldest unsettled owned Task (drains the queue stepwise). Returns a snapshot " +
       "and 'call again' on timeout (default 300s, cap 1800s), 'Nothing in flight' when no owned Task is unsettled, " +
-      "and an already-settled Task's result immediately. Esc aborts the call, not a working Task (it detaches). " +
+      "and an already-settled Task's result immediately. Esc stops the call, not a working Task (it detaches). " +
       "Owner-gated like freebuff_progress.",
     parameters: waitParams,
     loadMode: "essential",
@@ -336,7 +336,7 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
             details.phase === "working" || details.phase === "settling"
               ? "the Task detaches and keeps running; its answer still arrives as an asynchronous push"
               : "the Task left the flight";
-          return { content: [{ type: "text", text: `${progressText(details)} — aborted: ${note}` }], details };
+          return { content: [{ type: "text", text: `${progressText(details)} — stopped: ${note}` }], details };
         }
         if (outcome.kind === "timeout") {
           return {

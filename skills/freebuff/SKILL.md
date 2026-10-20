@@ -1,13 +1,15 @@
 ---
 name: freebuff
-description: Hand one long, independent coding Task to the freebuff CLI (a different model with its own one-hour allowance) while this session keeps working; use when a Task is worth delegating rather than done in-session, and read this before deciding between freebuff_run and doing the work yourself.
+description: Documents the freebuff plugin, which hands one long, independent coding Task to the freebuff CLI (a different model with its own one-hour allowance) while the session keeps working; read this when choosing between freebuff_run and doing the work in-session, or when a submitted Task needs watching, waiting or stopping.
 disable-model-invocation: true
 ---
 
-Delegate one coding Task to the freebuff CLI, a separate agent process with its
-own model and its own one-hour usage allowance. Use the skill when a Task is
-long and independent enough to be worth handing to that other model, and you
-need to choose between `freebuff_run` and doing the work in this session.
+This plugin hands one coding Task to the freebuff CLI: a separate agent
+process with its own model and its own one-hour usage allowance, working in
+this repo while your session stays free. The model never loads this file
+(`disable-model-invocation: true`); it is written for you, the human running
+the session. Read it when choosing between `freebuff_run` and doing the work
+in-session, or when a submitted Task needs watching, waiting or stopping.
 
 ## When to use
 

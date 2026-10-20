@@ -287,7 +287,9 @@ per freeze key, write-only.
 - `scripts/register-keeper-task.ps1` — registers the daily 21:00 Task
   Scheduler entry (bun + `scripts\keeper.ts`); `-Unregister` removes it,
   `-WhatIf` dry-runs.
-- `skills/freebuff/SKILL.md` — the bundled skill the host loads on demand.
+- `skills/freebuff/SKILL.md` — the bundled skill; `disable-model-invocation:
+  true` keeps it invisible to the model, reachable only via `/skill:freebuff` /
+  `skill://freebuff`.
 - `tests/` — unit tests per module, corpus tests over the recorded screen
   fixtures, the host-seam policy guard, stub end-to-end tests over
   `tests/helpers/stub-freebuff.mjs`, and the SDK harness tier that drives the
@@ -307,4 +309,4 @@ per freeze key, write-only.
   ADR-0003 three endings — cancel, detach, abandon; ADR-0004 Task state is
   process-scoped; ADR-0005 the repo checkout is the extension package; ADR-0006
   the run tool returns at the Ack; ADR-0007 the directory-line guard is
-  dropped.
+  dropped; ADR-0008 the bounded Wait tool.
