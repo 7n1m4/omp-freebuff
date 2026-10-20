@@ -31,6 +31,8 @@ SHA-named captures are imported verbatim from their dump and may open with the
 frame text directly — replay from a blank screen reproduces them either way.
 Tests replay with `\r\n` line endings, as the PTY emits them.
 
+Editing these `.ansi` fixtures is printf/xxd (or script) territory: the edit/write tool transport strips ESC (`\x1b`) bytes from anything you type.
+
 ## Promote a Screen dump
 
 When `screenDrift` is set, a dump under `<configDir>/screen-dumps/<version>/`
