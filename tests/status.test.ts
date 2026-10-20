@@ -100,6 +100,7 @@ describe("freebuffStatus", () => {
       foreign: { live: [] },
       archive: { count: 0, totalBytes: 0 },
       abandoned: [],
+      screenDrift: false,
     });
   });
 
@@ -143,16 +144,54 @@ describe("freebuffStatus", () => {
       kind: "extension",
       startedAt: new Date(NOW).toISOString(),
     });
+    writeHolder(`freebuff-live-31337.json`, {
+      ownerPid: 31337,
+      model: "glm-5.3-flash",
+      expiresAt: NOW + 120_000,
+    });
     const status = freebuffStatus({
       pluginDir,
       freebuffConfigDir: configDir,
       instancePid: 31337,
-      ...deps([], { hasLiveTask: () => true }),
+      ...deps([31337], { hasLiveTask: () => true }),
     });
     expect(status.lock.state).toBe("self");
     expect(status.instancePid).toBe(31337);
-    // The known Instance must not report itself as a foreign holder.
+    // The known Instance must not report itself as a foreign holder, but its
+    // record is the Hour-session source: two minutes left.
     expect(status.foreign.live).toEqual([]);
+    expect(status.hourMinutesLeft).toBe(2);
+  });
+
+  test("an expired own live record leaves the Hour-session remainder undefined", () => {
+    writeHolder(`freebuff-live-31337.json`, {
+      ownerPid: 31337,
+      model: "glm-5.3-flash",
+      expiresAt: NOW - 1,
+    });
+    const status = freebuffStatus({
+      pluginDir,
+      freebuffConfigDir: configDir,
+      instancePid: 31337,
+      ...deps([31337]),
+    });
+    expect(status.hourMinutesLeft).toBeUndefined();
+  });
+
+  test("the drift alarm rises for an unrecognized dump the corpus does not cover", () => {
+    const corpusDir = mkdtempSync(join(tmpdir(), "status-corpus-test-"));
+    writeFileSync(join(configDir, "freebuff-metadata.json"), JSON.stringify({ version: "9.9.9" }));
+    mkdirSync(join(configDir, "screen-dumps", "9.9.9"), { recursive: true });
+    writeFileSync(join(configDir, "screen-dumps", "9.9.9", "unrecognized-abc.ansi"), "frame");
+
+    // The corpus already covers 9.9.9: the promotion is the fix, no drift.
+    mkdirSync(join(corpusDir, "9.9.9"), { recursive: true });
+    expect(
+      freebuffStatus({ pluginDir, freebuffConfigDir: configDir, corpusDir, ...deps() }).screenDrift,
+    ).toBe(false);
+
+    // An uncovered version: the dump is unpromoted drift.
+    expect(freebuffStatus({ pluginDir, freebuffConfigDir: configDir, ...deps() }).screenDrift).toBe(true);
   });
 
   test("foreign live holders are listed alongside the Lock state (AC #6)", () => {

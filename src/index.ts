@@ -141,10 +141,12 @@ const statusText = (status: StatusResult & { queue: { depth: number }; activeTas
   const parts = [
     `lock ${status.lock.state}`,
     `instance ${status.instancePid ?? "none"}`,
+    ...(status.hourMinutesLeft !== undefined ? [`hour ${status.hourMinutesLeft}m left`] : []),
     `queue ${status.queue.depth}`,
     status.activeTask === null ? "no active task" : `active ${status.activeTask.taskId} (${status.activeTask.phase})`,
     `archive ${status.archive.count} ${status.archive.count === 1 ? "task" : "tasks"}`,
     ...(status.abandoned.length > 0 ? [`abandoned ${status.abandoned.length}`] : []),
+    ...(status.screenDrift ? ["screen drift"] : []),
   ];
   return parts.join("; ");
 };
@@ -304,7 +306,14 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
         const singleton = singletonOf();
         const instancePid = singleton.instancePid() ?? undefined;
         const details: StatusResult & { queue: { depth: number; taskIds: string[] }; activeTask: { taskId: string; phase: string } | null } = {
-          ...freebuffStatus({ pluginDir: options.pluginDir, freebuffConfigDir: options.freebuffConfigDir, instancePid }),
+          ...freebuffStatus({
+            pluginDir: options.pluginDir,
+            freebuffConfigDir: options.freebuffConfigDir,
+            instancePid,
+            // Our own record names our pid with a live Task behind it: without
+            // this the stale-by-identity arm misreads every active run.
+            hasLiveTask: () => singleton.statusExtra().activeTask !== null,
+          }),
           ...singleton.statusExtra(),
         };
         return { content: [{ type: "text", text: statusText(details) }], details };

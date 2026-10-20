@@ -601,7 +601,10 @@ describe("freebuff tool surface over the singleton (harness tier)", () => {
         const details = status.details as StatusDetails;
         expect(details.queue.depth).toBe(0);
         expect(details.activeTask).toMatchObject({ taskId });
-        expect(details.lock).toBeDefined();
+        // The production call shape: our own live Lock with a Task behind it
+        // reads as self, never as stale (stale-by-identity needs no live Task).
+        expect(details.lock.state).toBe("self");
+        expect(details.lock.ownerPid).toBe(process.pid);
         expect(details.archive).toBeDefined();
         expect(details.foreign).toBeDefined();
 

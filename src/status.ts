@@ -1,7 +1,7 @@
 // freebuff_status: the Lock's state, the Instance pid, the current junction Target,
 // freebuff's own live-slot records and the Task archive summary, so a human sees
-// who holds the account's slot (ADR-0001). Queue depth and Hour-session fields
-// belong to later tickets; nothing here is a placeholder.
+// who holds the account's slot (ADR-0001). The Hour-session minutes and the
+// screen-drift flag come from the same reads; nothing here is a placeholder.
 import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,8 @@ import {
   type LockState,
 } from "./lock";
 import { archiveSummary, readAbandonedTasks, type AbandonedTaskReport } from "./archive";
+import { corpusVersions } from "./protocol/corpus";
+import { hasUnrecognizedDump, metadataVersion } from "./protocol/screenDump";
 import { readJunctionTarget, workspaceDir } from "./workspace";
 
 export function defaultFreebuffConfigDir(): string {
@@ -71,10 +73,20 @@ export interface StatusResult {
   foreign: { live: { pid: number; model: string; expiresAt: number }[] };
   archive: { count: number; totalBytes: number; newestId?: string };
   abandoned: AbandonedTaskReport[];
+  /** Minutes left on our own Instance's Hour session, from its per-pid record; undefined without a live record. */
+  hourMinutesLeft?: number;
+  /** The drift alarm: an unrecognized-frame dump exists for the installed version the shipped corpus does not cover. */
+  screenDrift: boolean;
 }
 
 export function freebuffStatus(
-  opts: { pluginDir: string; freebuffConfigDir: string; instancePid?: number } & LockDeps,
+  opts: {
+    pluginDir: string;
+    freebuffConfigDir: string;
+    instancePid?: number;
+    /** Corpus root override for tests; defaults to the shipped fixture corpus. */
+    corpusDir?: string;
+  } & LockDeps,
 ): StatusResult {
   const record = readLock(opts.pluginDir);
   const lock: StatusResult["lock"] = {
@@ -93,16 +105,27 @@ export function freebuffStatus(
   // The in-process pid is known even when the record predates the spawn.
   const instancePid = opts.instancePid ?? record?.instancePid ?? undefined;
   const target = readJunctionTarget(workspaceDir(opts.pluginDir));
+  // One read pass over freebuff's per-pid records serves both the foreign list
+  // and our own Instance's Hour-session remainder.
+  const liveHolders = readForeignHolders(opts.freebuffConfigDir, {
+    now: opts.now,
+    isPidAlive: opts.isPidAlive,
+  }).live;
+  const own = instancePid !== undefined ? liveHolders.find((h) => h.pid === instancePid) : undefined;
+  const foreign = liveHolders.filter((h) => h.pid !== instancePid);
+  const version = metadataVersion(opts.freebuffConfigDir);
+  const now = opts.now ?? Date.now;
   const status: StatusResult = {
     lock,
-    foreign: readForeignHolders(opts.freebuffConfigDir, {
-      now: opts.now,
-      isPidAlive: opts.isPidAlive,
-      ownInstancePid: instancePid,
-    }),
+    foreign: { live: foreign },
     archive: archiveSummary(opts.pluginDir),
     abandoned: readAbandonedTasks(opts.pluginDir),
+    screenDrift:
+      version !== null &&
+      hasUnrecognizedDump(opts.freebuffConfigDir, version) &&
+      !corpusVersions(opts.corpusDir).includes(version),
   };
+  if (own !== undefined) status.hourMinutesLeft = Math.max(0, Math.ceil((own.expiresAt - now()) / 60_000));
   if (instancePid !== undefined) status.instancePid = instancePid;
   if (target !== undefined) status.target = target;
   return status;
