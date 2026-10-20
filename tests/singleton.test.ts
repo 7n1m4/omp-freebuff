@@ -767,6 +767,10 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
       expect(await rejectionOf(clock, sing().cancel(owner))).toMatchObject({ code: "no_active_task" });
     });
 
+    test("a screen read with no live instance is refused as no_instance", async () => {
+      expect(await rejectionOf(clock, sing().screenText(owner))).toMatchObject({ code: "no_instance" });
+    });
+
     test("a user interrupt while working detaches: the task runs to its real verdict and pushes", async () => {
       const { taskId } = await workingSubmit();
 

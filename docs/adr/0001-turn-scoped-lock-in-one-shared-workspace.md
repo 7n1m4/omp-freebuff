@@ -52,7 +52,7 @@ Kill the Instance on `session_shutdown`. OMP gives a shutdown handler 2 s (`SESS
 
 - **Workspace** = `%LOCALAPPDATA%\freebuff-plugin\freebuff-ws`: durable, constant, machine-wide, never session-derived. Its basename is freebuff's chat-store key (`projects\<basename>\chats\`), hence a distinctive name rather than `ws`. `%TEMP%` is *safe* now that the Hour is known not to be directory-keyed; it is rejected because the Workspace is where freebuff's per-directory state and chat history live, and cleanup surprises cost more than a temp path saves.
 - **Target directory** = the OMP session's cwd resolved to its **git root** (`git rev-parse --show-toplevel`, falling back to the raw cwd when there is no work tree), so freebuff's "you started in a subdirectory of a git repo" rebind never fires and the Instance never leaves `repo/`. `assertSafeTarget` ports as-is: filesystem roots, the Workspace and its ancestors stay refused.
-- **Plugin directory** `%LOCALAPPDATA%\freebuff-plugin\`: the Lock, `errors.jsonl`, screen dumps, and the Workspace.
+- **Plugin directory** `%LOCALAPPDATA%\freebuff-plugin\`: the Lock, `errors.jsonl`, and the Workspace. Screen dumps are the one thing outside it — `<freebuff config dir>\screen-dumps\<version>\`, under freebuff's own config dir, because the version they are keyed by lives in that dir's `freebuff-metadata.json` (amended by CONTEXT.md).
 
 ### 5. What the extension reports
 

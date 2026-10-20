@@ -87,7 +87,12 @@ working Task and cancels a queued or submitting one (ADR-0003).
 
 Polls one Task. Omitted `taskId` means the active Task, else the newest. The
 `details` carry `{taskId, phase, phaseSource, elapsedMs, verdict?, answer?,
-message?, archivePath?, screenExcerpt?, warnings?, position?}`. A `done` Task
+message?, archivePath?, screenExcerpt?, warnings?, position?}`. While the Task
+is `working`, the per-step feed rides the same details: `steps` (the newest
+`End agent … step N` line, tailed at 200 ms), `lastToolCall`/`lastToolResult`
+(that step's tool names), `partialAnswer` (its running fullResponse) and
+`blocks` (the rendered chat store's block count, re-read at the 5 s cadence).
+A `done` Task
 returns the verbatim answer as the tool text; a `failed` Task is an
 `isError` result carrying the Verdict, the reason and a screen excerpt.
 Errors: `unknown_task`, `not_owner`.
@@ -108,7 +113,10 @@ interrupt of the tool call (ADR-0003), never by this tool.
 Diagnostics, readable from any session — the one tool not owner-gated. The
 `details` combine the machine facts with this process's queue:
 `lock {state, ownerPid?, instancePid?, kind?, startedAt?}`, `instancePid?`,
-`target?` (the junction's current destination), `foreign.live`
+`hourMinutesLeft?` (our Instance's Hour-session remainder from its per-pid
+record), `screenDrift` (an unrecognized-frame dump exists for the installed
+version the shipped corpus does not cover), `target?` (the junction's current
+destination), `foreign.live`
 (`{pid, model, expiresAt}[]`, freebuff's own live-slot records), `archive
 {count, totalBytes, newestId?}`, `abandoned[]`, plus `queue {depth, taskIds}`
 and `activeTask`.
@@ -282,4 +290,5 @@ per freeze key, write-only.
   in one shared Workspace; ADR-0002 the Keeper stays a scheduled script;
   ADR-0003 three endings — cancel, detach, abandon; ADR-0004 Task state is
   process-scoped; ADR-0005 the repo checkout is the extension package; ADR-0006
-  the run tool returns at the Ack.
+  the run tool returns at the Ack; ADR-0007 the directory-line guard is
+  dropped.

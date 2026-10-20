@@ -5,6 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { scanSkillsFromDir } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import type { LoadContext } from "@oh-my-pi/pi-coding-agent/capability/types";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const repoRoot = join(import.meta.dir, "..");
@@ -50,5 +51,20 @@ describe("bundled freebuff skill discovery", () => {
     for (const word of ["freebuff_run", "freebuff_progress", "freebuff_cancel", "Ack"]) {
       expect(body).toContain(word);
     }
+  });
+});
+
+// ADR-0005: the repo checkout is the extension package. The loader imports
+// `package.json#omp.extensions` and never scans the repo, so the manifest is
+// the whole install contract — pinned here because the SDK harness loads the
+// factory directly and would not notice the declaration drifting.
+describe("package manifest (ADR-0005)", () => {
+  test("declares the extension entry the loader imports", async () => {
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+      name?: unknown;
+      omp?: { extensions?: unknown };
+    };
+    expect(pkg.name).toBe("pi-freebuff");
+    expect(pkg.omp?.extensions).toEqual(["./src/index.ts"]);
   });
 });
