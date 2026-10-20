@@ -307,7 +307,12 @@ export class TurnRunner {
       // 1. Instance: reuse the live one, else spawn. The record names the pid
       // only once the child exists (ADR-0001: it goes down null before that).
       let driver = this.driver;
+      // Whether this run spawned: the settle below is this run's first screen
+      // settle either way, but only a spawn's ready_timeout is the known
+      // recoverable failure that earns the resubmit hint below.
+      let freshSpawn = false;
       if (driver === null || !driver.alive()) {
+        freshSpawn = true;
         driver = await this.startDriver();
         this.driver = driver;
       }
@@ -337,7 +342,15 @@ export class TurnRunner {
         } else if (settled.reason === "displaced") {
           outcome = { ok: false, verdict: "displaced", message: "the Instance was displaced; no keystrokes sent", screenExcerpt: excerpt };
         } else {
-          outcome = { ok: false, verdict: "driver_error", message: `settle failed: ${settled.reason}`, screenExcerpt: excerpt };
+          // The hint names the recovery only the spawn phase has: freebuff was
+          // spawned but its screen never settled, and a plain resubmit (fresh
+          // spawn) usually succeeds. A reused instance that stops settling is
+          // a different failure and stays bare.
+          const hint =
+            freshSpawn && settled.reason === "ready_timeout"
+              ? "; freebuff never became ready at spawn; check freebuff_status/freebuff_screen, then resubmit"
+              : "";
+          outcome = { ok: false, verdict: "driver_error", message: `settle failed: ${settled.reason}${hint}`, screenExcerpt: excerpt };
         }
         return this.settleTurn(turn, baseline, outcome, true, warnings);
       }

@@ -295,7 +295,6 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     ["slot_held", "slot_held"],
     ["displaced", "displaced"],
     ["needs_login", "driver_error"],
-    ["ready_timeout", "driver_error"],
   ] as const)("settle %s maps to verdict %s with the instance killed and zero keystrokes", async (reason, verdict) => {
     const runner = newRunner();
     scripted.settle = { ok: false, reason, excerpt: "held frame" };
@@ -309,6 +308,48 @@ describe("TurnRunner policy (scripted driver, virtual clock, real lock file)", (
     expect(kindsOf()).toEqual(["spawn"]);
     expect(scripted.isAlive).toBe(false);
     expect(existsSync(lockPath())).toBe(false);
+  });
+
+  test("a spawn-phase ready_timeout fails driver_error with the resubmit hint", async () => {
+    const runner = newRunner();
+    scripted.settle = { ok: false, reason: "ready_timeout", excerpt: "never settled" };
+
+    const outcome = await drive(runner.run(PROMPT));
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.verdict).toBe("driver_error");
+      expect(outcome.message).toBe(
+        "settle failed: ready_timeout; freebuff never became ready at spawn; check freebuff_status/freebuff_screen, then resubmit",
+      );
+      expect(outcome.screenExcerpt).toBe("never settled");
+    }
+    // Zero keystrokes: the hint is the only recovery the failure offers.
+    expect(kindsOf()).toEqual(["spawn"]);
+    expect(scripted.isAlive).toBe(false);
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  test("a reused instance's ready_timeout fails bare: no spawn-phase hint", async () => {
+    const runner = newRunner();
+    scripted.afterPaste = ackAndEnd;
+    await drive(runner.run(PROMPT));
+    expect(scripted.isAlive).toBe(true);
+
+    // The live instance now stops settling on the second submit's first wait:
+    // no spawn happened, so the message must not offer the resubmit hint.
+    scripted.events = [];
+    scripted.afterPaste = null;
+    scripted.settle = { ok: false, reason: "ready_timeout", excerpt: "stuck frame" };
+    const outcome = await drive(runner.run(PROMPT));
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.verdict).toBe("driver_error");
+      expect(outcome.message).toBe("settle failed: ready_timeout");
+      expect(outcome.screenExcerpt).toBe("stuck frame");
+    }
+    expect(created).toBe(1);
+    expect(kindsOf()).toEqual([]);
+    expect(scripted.isAlive).toBe(false);
   });
 
   test("slot_held names the holder the per-pid record carries; no record keeps the plain wording", async () => {
