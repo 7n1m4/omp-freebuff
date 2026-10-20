@@ -27,6 +27,8 @@ dump dir, so it stays; the table row is where their screen is recorded.
 
 Format: the flattened visible screen, trailing row padding trimmed, behind a
 `\x1b[2J\x1b[H` clear+home prefix, so `flattenScreen([fixture])` reproduces it.
+SHA-named captures are imported verbatim from their dump and may open with the
+frame text directly — replay from a blank screen reproduces them either way.
 Tests replay with `\r\n` line endings, as the PTY emits them.
 
 ## Promote a Screen dump
