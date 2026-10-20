@@ -452,7 +452,9 @@ export class TurnRunner {
   // record carries; with no live record naming one, the plain wording stands.
   private slotHeldMessage(): string {
     try {
-      const holder = readForeignHolders(this.options.freebuffConfigDir).live[0];
+      const holder = readForeignHolders(this.options.freebuffConfigDir, {
+        ownInstancePid: this.instancePid() ?? undefined,
+      }).live[0];
       if (holder !== undefined) {
         return `the Hour slot is held by another window: pid ${holder.pid} (${holder.model})`;
       }
