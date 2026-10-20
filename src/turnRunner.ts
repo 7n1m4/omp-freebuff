@@ -22,7 +22,7 @@ import { classifyScreen, errorLines, EXCERPT_LINES, freezeKey, screenExcerpt } f
 import { partialAnswer as partialAnswerOf, type TurnBaseline } from "./protocol/chatStore";
 import { enterWhitelisted } from "./protocol/whitelist";
 import { readForeignHolders } from "./status";
-import { readJunctionTarget } from "./workspace";
+import { ensureJunction, readJunctionTarget } from "./workspace";
 
 // The nine-set from CONTEXT. This runner's own paths produce ack_missing,
 // crashed, no_answer, driver_error, slot_held and displaced; its watchdog adds
@@ -122,6 +122,8 @@ interface ActiveTurn {
   prompt: string;
   startedAt: number;
   taskId: string | undefined;
+  /** The submit-resolved Target; its junction swap happens inside the claimed Lock. */
+  target: string | undefined;
   phases: string[];
   abandoned: boolean;
 }
@@ -174,7 +176,7 @@ export class TurnRunner {
 
   async run(
     prompt: string,
-    override?: { taskId?: string; onPhase?: (phase: TurnPhase) => void },
+    override?: { taskId?: string; onPhase?: (phase: TurnPhase) => void; target?: string },
   ): Promise<TurnOutcome> {
     // LockBusyError (cross-Owner contention) propagates: a caller mistake, not a Task verdict.
     this.cancelRequested = false;
@@ -182,6 +184,7 @@ export class TurnRunner {
       prompt,
       startedAt: this.clock.now(),
       taskId: override?.taskId ?? this.options.taskId,
+      target: override?.target,
       phases: [],
       abandoned: false,
     };
@@ -289,6 +292,11 @@ export class TurnRunner {
       }
       // An abandon that landed during the claim: nothing spawns, nothing writes.
       if (turn.abandoned) throw ABANDONED;
+      // The junction swap is the Lock's own right (story 31, ADR-0001): it
+      // happens only inside the claimed Lock — after a stale record's kill and
+      // delete, before the spawn — so a concurrently running Task's repo is
+      // never swapped out from under it.
+      if (turn.target !== undefined) ensureJunction(this.options.workspace, turn.target);
       // 1. Instance: reuse the live one, else spawn. The record names the pid
       // only once the child exists (ADR-0001: it goes down null before that).
       let driver = this.driver;

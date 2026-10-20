@@ -439,6 +439,9 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
     expect(drivers).toHaveLength(0);
     expect(sing().statusExtra().activeTask).toBeNull();
     expect(existsSync(join(pluginDir, "tasks"))).toBe(false);
+    // The junction swap waits for the Lock (story 31): a claim that never
+    // succeeded never re-pointed <workspace>/repo at this submit's Target.
+    expect(existsSync(join(pluginDir, "ws", "repo"))).toBe(false);
     expect(progressOf(undefined)).toMatchObject({ phase: "failed", phaseSource: "verdict" });
     expect(progressOf(undefined).message).toContain("999999999");
   });

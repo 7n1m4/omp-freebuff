@@ -3,12 +3,13 @@
 // only. The stub command is injected; the real freebuff CLI is never spawned.
 // Integration tier: the subject is a real PTY child process, so deterministic
 // virtual time cannot drive it and every wait is a bounded poll.
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { LockBusyError, pidAlive, writeLock } from "../src/lock";
 import { TurnRunner } from "../src/turnRunner";
+import { readJunctionTarget } from "../src/workspace";
 import { eventsOf, kindsOf, readInputLog } from "./helpers/stubInputLog";
 
 const stubPath = join(import.meta.dir, "helpers", "stub-freebuff.mjs");
@@ -73,9 +74,13 @@ describe("blocking Task path over the stub child", () => {
     async () => {
       const h = harness("happy");
       cleanup = h.dispose;
-      const first = await h.runner.run(PROMPT);
+      const targetRepo = join(h.pluginDir, "wanted-repo");
+      mkdirSync(targetRepo, { recursive: true });
+      const first = await h.runner.run(PROMPT, { target: targetRepo });
       expect(first).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
       expect(existsSync(lockPathOf(h.pluginDir))).toBe(false);
+      // The targeted run re-pointed <workspace>/repo at the Target (story 37).
+      expect(readJunctionTarget(h.workspace)).toBe(targetRepo);
 
       const second = await h.runner.run(PROMPT);
       expect(second).toEqual({ ok: true, answer: ANSWER, archivePath: expect.any(String) });
@@ -259,13 +264,16 @@ describe("blocking Task path over the stub child", () => {
           startedAt: new Date().toISOString(),
         });
 
-        const failure: unknown = await h.runner.run(PROMPT).then(
+        const failure: unknown = await h.runner.run(PROMPT, { target: join(h.pluginDir, "wanted-repo") }).then(
           () => null,
           (error: unknown) => error,
         );
         expect(failure).toBeInstanceOf(LockBusyError);
         expect(existsSync(h.inputLog)).toBe(false);
         expect(existsSync(join(h.pluginDir, "tasks"))).toBe(false);
+        // The Target's junction swap is inside the Lock: the blocked claim
+        // never re-pointed <workspace>/repo (story 31).
+        expect(existsSync(join(h.workspace, "repo"))).toBe(false);
       } finally {
         holder.kill();
       }

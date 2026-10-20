@@ -11,7 +11,7 @@ import { LockBusyError, type LockDeps } from "./lock";
 import { readChats } from "./protocol/chatStore";
 import { defaultFreebuffConfigDir, freebuffStatus } from "./status";
 import { TurnRunner, type TurnRunnerOptions, type Verdict } from "./turnRunner";
-import { defaultPluginDir, ensureJunction, resolveTarget, workspaceDir } from "./workspace";
+import { defaultPluginDir, resolveTarget, workspaceDir } from "./workspace";
 
 export interface KeeperOptions {
   /** lock.json and tasks/ home; defaults to %LOCALAPPDATA%\freebuff-plugin. */
@@ -117,7 +117,6 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<KeeperRepo
       `${abandoned.length} abandoned task(s) reported, none resumed`,
   );
 
-  ensureJunction(workspace, target);
   const runner = new TurnRunner({
     pluginDir,
     workspace,
@@ -130,7 +129,8 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<KeeperRepo
     createDriver: options.createDriver,
   });
   try {
-    const outcome = await runner.run(keeperPrompt());
+    // The junction swap rides the runner, inside the claimed Lock (story 31).
+    const outcome = await runner.run(keeperPrompt(), { target });
     const taskId = outcome.archivePath === undefined ? undefined : basename(outcome.archivePath);
     if (outcome.ok) log(`keeper task ${taskId}: done`);
     else log(`keeper task ${taskId}: ${outcome.verdict} (${outcome.message})`);

@@ -15,7 +15,7 @@ import {
   type TurnRunnerOptions,
   type Verdict,
 } from "./turnRunner";
-import { assertSafeTarget, ensureJunction, resolveTarget } from "./workspace";
+import { assertSafeTarget, resolveTarget } from "./workspace";
 
 export type Phase = "queued" | TurnPhase | "done" | "failed";
 
@@ -276,27 +276,22 @@ export class FreebuffSingleton {
   // -- activation --------------------------------------------------------------
 
   // Per activation: the process-scoped runner drives the Task, carrying the
-  // submit-time taskId and this task's phase routing as per-call overrides.
-  // The runner — and with it the live Instance — persists across Tasks
-  // (ADR-0001: released with the Lock, kept alive and idle for reuse); the
-  // respawn is lazy, on the next activation after a failure dropped it. The
-  // junction swap happens only here, while no run is in flight.
+  // submit-time taskId, this task's phase routing and its Target as per-call
+  // overrides. The runner — and with it the live Instance — persists across
+  // Tasks (ADR-0001: released with the Lock, kept alive and idle for reuse);
+  // the respawn is lazy, on the next activation after a failure dropped it.
+  // The junction swap is the runner's, inside the claimed Lock.
   private activate(task: TaskRecord): void {
     this.activeTaskId = task.taskId;
     task.phase = "submitting";
     task.phaseSource = "step-state";
     this.ensureTick();
-    try {
-      ensureJunction(this.runnerOptions.workspace, task.target);
-    } catch (error) {
-      this.abandon(task, { code: "submit_failed", message: messageOf(error) });
-      return;
-    }
     this.runner ??= new TurnRunner(this.runnerOptions);
     task.settling = this.runner
       .run(task.prompt, {
         taskId: task.taskId,
         onPhase: (phase) => this.onPhase(task, phase),
+        target: task.target,
       })
       .then(
         (outcome) => this.settle(task, this.fieldsOf(outcome)),
