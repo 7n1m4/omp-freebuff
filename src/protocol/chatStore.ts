@@ -166,10 +166,15 @@ export function turnDirs(
 }
 
 // The verbatim text of one dir's complete log lines at or after the byte
-// offset: the archive's slice of this Turn's log.
+// offset: the archive's slice of this Turn's log. A trailing fragment without
+// a newline is not a line yet and stays out.
 export function logSince(snap: ChatDirSnapshot, fromBytes: number): string {
-  const first = logLines(snap.logText).find((line) => line.byteStart >= fromBytes);
-  return first === undefined ? "" : snap.logText.slice(first.start);
+  const text = snap.logText;
+  const lines = logLines(text);
+  const first = lines.find((line) => line.byteStart >= fromBytes);
+  if (first === undefined) return "";
+  const last = lines[lines.length - 1];
+  return text.slice(first.start, text.indexOf("\n", last.start) + 1);
 }
 
 function scanDir(snap: ChatDirSnapshot, from: number): TurnEndResult | null {
