@@ -134,7 +134,11 @@ const progressText = (details: ProgressDetails): string => {
     details.phase === "queued" && details.position !== undefined
       ? `queued at position ${details.position}`
       : details.phase;
-  return `freebuff task ${details.taskId} ${at} (${details.phaseSource}, ${Math.floor(details.elapsedMs / 1000)}s)`;
+  const feed =
+    details.steps !== undefined
+      ? `, step ${details.steps}${details.lastToolCall === undefined ? "" : ` after ${details.lastToolCall}`}`
+      : "";
+  return `freebuff task ${details.taskId} ${at} (${details.phaseSource}, ${Math.floor(details.elapsedMs / 1000)}s${feed})`;
 };
 
 const statusText = (status: StatusResult & { queue: { depth: number }; activeTask: { taskId: string; phase: string } | null }): string => {

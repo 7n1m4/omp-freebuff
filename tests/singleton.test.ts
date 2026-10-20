@@ -779,6 +779,40 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
       expect(existsSync(join(pluginDir, "lock.json"))).toBe(false);
     });
 
+    test("the working progress carries the per-step feed: step, tools, partial answer, rendered blocks", async () => {
+      const { taskId } = await workingSubmit();
+      // No step line yet: the feed fields stay off the details.
+      expect(progressOf(taskId)).not.toHaveProperty("steps");
+
+      drivers[0].append({
+        level: "DEBUG",
+        msg: "End agent base3-free-catalog step 3 (id)",
+        data: {
+          shouldEndTurn: false,
+          toolCalls: [{ toolName: "edit_file" }],
+          toolResults: [{ toolName: "edit_file" }],
+          fullResponse: "half the work is done",
+        },
+      });
+      drivers[0].renderedBlockCounts[drivers[0].dirName] = 7;
+      // The rendered read is the feed's slow cadence (≤5 s), so the pump runs
+      // past the first sample point.
+      await pumpUntil(clock, () => progressOf(taskId).blocks === 7, { budgetMs: 20_000 });
+      expect(progressOf(taskId)).toMatchObject({
+        steps: 3,
+        lastToolCall: "edit_file",
+        lastToolResult: "edit_file",
+        partialAnswer: "half the work is done",
+        blocks: 7,
+      });
+
+      // The feed rides only the active Task: another session's settled Task
+      // (or a queued one) never carries a step sample.
+      drivers[0].endTurn(ANSWER);
+      await pumpUntil(clock, () => pushes.length === 1);
+      expect(progressOf(taskId)).not.toHaveProperty("steps");
+    });
+
     test.each(["Interrupted by user", "AbortError"] as const)(
       "an interrupt while submitting (%s) cancels the task",
       async (reason) => {

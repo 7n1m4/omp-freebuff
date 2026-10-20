@@ -175,6 +175,20 @@ const runTurn = async (prompt) => {
   await sleep(30 + Math.random() * 40);
   if (mode === "slow-ack") await sleep(1500);
   storeWrite(JSON.stringify({ msg: prompt }) + "\n");
+  // The real 0.2.29 CLI logs one DEBUG line per mid-turn agent step whose data
+  // carries the step's tool calls; the per-step feed reads it.
+  storeWrite(
+    JSON.stringify({
+      level: "DEBUG",
+      msg: "End agent base3-free-catalog step 1 (stub)",
+      data: {
+        shouldEndTurn: false,
+        fullResponse: "",
+        toolCalls: [{ toolName: "run_terminal_command", toolCallId: "stub1" }],
+        toolResults: [{ toolName: "run_terminal_command", toolCallId: "stub1" }],
+      },
+    }) + "\n",
+  );
   if (crashThisTurn) {
     setTimeout(() => process.exit(1), 100);
     return;

@@ -177,3 +177,78 @@ export function detectTurnEnd(snapshots: ChatDirSnapshot[], baseline: TurnBaseli
   }
   return { done: false, answer: null };
 }
+
+// The per-step progress feed (story 14). freebuff logs one DEBUG line per agent
+// step — `End agent <id> step N` (re-verified on 0.2.29) — whose data carries the
+// step's tool calls, tool results and the running fullResponse. Only the shapes
+// the feed reads are pinned; level and agent id are ignored.
+export type StepFeed = {
+  step: number;
+  lastToolCall?: string;
+  lastToolResult?: string;
+  partialAnswer?: string;
+};
+
+const STEP_END_REGEX = /^End agent \S+ step (\d+)/;
+const TOOL_CALLS_KEY = "toolCalls";
+const TOOL_RESULTS_KEY = "toolResults";
+
+const dataOf = (json: Record<string, unknown>): Record<string, unknown> =>
+  typeof json.data === "object" && json.data !== null ? (json.data as Record<string, unknown>) : json;
+
+const lastToolName = (data: Record<string, unknown>, key: string): string | undefined => {
+  const entries = data[key];
+  if (!Array.isArray(entries)) return undefined;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry !== null && typeof entry === "object" && typeof (entry as Record<string, unknown>).toolName === "string") {
+      return (entry as Record<string, unknown>).toolName as string;
+    }
+  }
+  return undefined;
+};
+
+// The newest `End agent ... step N` line at or after the baseline, read in
+// chronological order (the baseline's tail, then newer dirs oldest first); a
+// store with no step line yet reads as null.
+export function stepFeedSince(snapshots: ChatDirSnapshot[], baseline: TurnBaseline): StepFeed | null {
+  const base = snapshots.find((s) => s.dirName === baseline.dirName);
+  const newer = (base
+    ? snapshots.filter((s) => byNewest(s, base) < 0)
+    : snapshots.filter((s) => s.dirName !== baseline.dirName)
+  ).sort((a, b) => byNewest(b, a));
+  const found: { step: number; data: Record<string, unknown> | null } = { step: 0, data: null };
+  const scan = (snap: ChatDirSnapshot, from: number): void => {
+    for (const line of logLines(snap.logText)) {
+      if (line.byteStart < from || line.json === null) continue;
+      const match = STEP_END_REGEX.exec(String(line.json[MSG_KEY] ?? ""));
+      if (match === null) continue;
+      found.step = Number(match[1]);
+      found.data = dataOf(line.json);
+    }
+  };
+  if (base) scan(base, baseline.logBytes);
+  for (const snap of newer) scan(snap, 0);
+  if (found.step === 0 || found.data === null) return null;
+  const feed: StepFeed = { step: found.step };
+  const lastCall = lastToolName(found.data, TOOL_CALLS_KEY);
+  if (lastCall !== undefined) feed.lastToolCall = lastCall;
+  const lastResult = lastToolName(found.data, TOOL_RESULTS_KEY);
+  if (lastResult !== undefined) feed.lastToolResult = lastResult;
+  const response = found.data[FULL_RESPONSE_KEY];
+  if (typeof response === "string" && response.length > 0) feed.partialAnswer = response;
+  return feed;
+}
+
+// The rendered chat store's block count for one chat dir: chat-messages.json is
+// rewritten atomically, so a torn read parses as null and the next poll re-reads.
+export function renderedBlockCount(configDir: string, dir: string, dirName: string): number | null {
+  try {
+    const parsed: unknown = JSON.parse(
+      readFileSync(join(configDir, PROJECTS_DIRNAME, projectKey(dir), CHATS_DIRNAME, dirName, "chat-messages.json"), "utf8"),
+    );
+    return Array.isArray(parsed) ? parsed.length : null;
+  } catch {
+    return null;
+  }
+}

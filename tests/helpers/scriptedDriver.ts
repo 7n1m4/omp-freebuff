@@ -2,7 +2,10 @@ import {
   detectTurnEnd,
   hasLineSince,
   lineMentionsPrompt,
+  renderedBlockCount as renderedBlockCountOf,
+  stepFeedSince as stepFeedSinceOf,
   type ChatDirSnapshot,
+  type StepFeed,
   type TurnBaseline,
 } from "../../src/protocol/chatStore";
 import { classifyScreen, type ScreenRead } from "../../src/protocol/screen";
@@ -42,6 +45,8 @@ export class ScriptedDriver implements DriverLike {
   // -- store simulation: one chat dir, appended to by the hooks ---------------
   dirName = "chat-0";
   logText = "";
+  /** Rendered block counts per chat dir, what a test wants renderedBlocks to report. */
+  renderedBlockCounts: Record<string, number> = {};
   // Archive inputs the runner reads best-effort after every settle: chatLog
   // mirrors the real driver's turn-dir concatenation, stderr stands in for a
   // separable stderr (ConPTY merges it in production, so it defaults empty).
@@ -132,6 +137,14 @@ export class ScriptedDriver implements DriverLike {
 
   turnEndSince(baseline: TurnBaseline) {
     return detectTurnEnd(this.snapshot(), baseline);
+  }
+
+  stepFeedSince(baseline: TurnBaseline): StepFeed | null {
+    return stepFeedSinceOf(this.snapshot(), baseline);
+  }
+
+  renderedBlocks(baseline: TurnBaseline): number | null {
+    return this.renderedBlockCounts[baseline.dirName] ?? null;
   }
 
   chatLog(_baseline: TurnBaseline | null): string {

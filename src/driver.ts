@@ -9,7 +9,7 @@ import { SCREEN_COLS, SCREEN_ROWS } from "./config";
 import { CliTerminalScreen, classifyScreen } from "./protocol/screen";
 import type { ScreenRead } from "./protocol/screen";
 import { writeScreenDump } from "./protocol/screenDump";
-import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, readChats } from "./protocol/chatStore";
+import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, readChats, renderedBlockCount, stepFeedSince, type StepFeed } from "./protocol/chatStore";
 import type { TurnBaseline, TurnEndResult } from "./protocol/chatStore";
 import { DEFAULT_PRESS_THROTTLE_MS, awaitSettled } from "./settle";
 import type { SettleIo, SettleOutcome } from "./settle";
@@ -127,6 +127,10 @@ export interface DriverLike {
   logSize(): number;
   ackSince(baseline: TurnBaseline, prompt: string): boolean;
   turnEndSince(baseline: TurnBaseline): TurnEndResult;
+  /** The per-step feed sample at or after the baseline (story 14); null before the first step line. */
+  stepFeedSince(baseline: TurnBaseline): StepFeed | null;
+  /** The rendered chat store's block count for the baseline dir; null when unreadable. */
+  renderedBlocks(baseline: TurnBaseline): number | null;
   cancelActive(): Promise<void>;
   kill(): void;
   /** Verbatim chat-store logs of the Turn: the baseline dir plus every newer dir, chronological, for the Task archive. */
@@ -321,6 +325,14 @@ export class FreebuffDriver implements DriverLike {
 
   turnEndSince(baseline: TurnBaseline): TurnEndResult {
     return detectTurnEnd(this.chats(), baseline);
+  }
+
+  stepFeedSince(baseline: TurnBaseline): StepFeed | null {
+    return stepFeedSince(this.chats(), baseline);
+  }
+
+  renderedBlocks(baseline: TurnBaseline): number | null {
+    return renderedBlockCount(this.options.freebuffConfigDir, this.options.workspace, baseline.dirName);
   }
 
   // The archive's verbatim chat log: the baseline dir plus every dir newer than

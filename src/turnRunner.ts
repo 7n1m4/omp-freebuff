@@ -19,7 +19,7 @@ import {
 import { withLock, type LockDeps, type LockKind } from "./lock";
 import { COUNTDOWN_REGEX, END_SESSION } from "./protocol/markers";
 import { classifyScreen, errorLines, EXCERPT_LINES, freezeKey, screenExcerpt } from "./protocol/screen";
-import { partialAnswer as partialAnswerOf, type TurnBaseline } from "./protocol/chatStore";
+import { partialAnswer as partialAnswerOf, type StepFeed, type TurnBaseline } from "./protocol/chatStore";
 import { enterWhitelisted } from "./protocol/whitelist";
 import { readForeignHolders } from "./status";
 import { ensureJunction, readJunctionTarget } from "./workspace";
@@ -134,6 +134,10 @@ export const DEADLINE_MS = 20 * 60_000;
 export const FREEZE_MS = 3 * 60_000;
 /** Error-log watcher poll: how often the working screen is scanned for known error lines. */
 export const ERROR_LOG_POLL_MS = 250;
+/** Progress-feed tail: how often the append-only log is tailed for step events (spec: ~100–250 ms). */
+export const FEED_POLL_MS = 200;
+/** The rendered chat store is re-read for its block count every FEED_RENDER_EVERY-th feed tick (≤5 s). */
+export const FEED_RENDER_EVERY = 25;
 
 const formatDuration = (ms: number): string => {
   if (ms % 60_000 !== 0) return `${ms / 1000}s`;
@@ -152,6 +156,10 @@ export class TurnRunner {
   // The one run in flight, from run() entry to its settle; abandonActive (#23)
   // claims it once and the abandoned flag is the run's stop signal.
   private activeTurn: ActiveTurn | null = null;
+  // The working phase's per-step feed sample (story 14), updated by the
+  // watchdog's feed tick; freebuff_progress reads it, nothing else.
+  private feed: StepFeed | null = null;
+  private feedBlocks: number | null = null;
 
   constructor(options: TurnRunnerOptions) {
     this.options = options;
@@ -180,6 +188,8 @@ export class TurnRunner {
   ): Promise<TurnOutcome> {
     // LockBusyError (cross-Owner contention) propagates: a caller mistake, not a Task verdict.
     this.cancelRequested = false;
+    this.feed = null;
+    this.feedBlocks = null;
     const turn: ActiveTurn = {
       prompt,
       startedAt: this.clock.now(),
@@ -385,7 +395,7 @@ export class TurnRunner {
       // deadline measures from the confirmed Ack, so a slow submit never eats
       // the budget. The loop below only observes; the archive write, the
       // Instance disposition and the settle itself live at this one site.
-      const watchdog = this.armWatchdog(driver, warnings);
+      const watchdog = this.armWatchdog(driver, warnings, baseline);
       try {
         const work = this.workLoop(driver, baseline, phase);
         // The race owns the settle; a post-settle loop death must not surface unhandled.
@@ -489,7 +499,7 @@ export class TurnRunner {
   // one error-log watcher. A trip resolves `tripped` exactly once; the race at
   // the call site settles the Task, and stop() (idempotent, awaited) clears
   // every timer and runs the watcher's final scan on every exit path.
-  private armWatchdog(driver: DriverLike, warnings: string[]): {
+  private armWatchdog(driver: DriverLike, warnings: string[], baseline: TurnBaseline): {
     tripped: Promise<TurnOutcome>;
     stop(): Promise<void>;
   } {
@@ -549,6 +559,23 @@ export class TurnRunner {
       })();
     }, pollMs);
     const errors = this.watchErrors(driver, warnings);
+    // The per-step feed (story 14): the append-only log is tailed at
+    // FEED_POLL_MS, the rendered store re-read for its block count every
+    // FEED_RENDER_EVERY-th tick. Pure observation on this run's own timers —
+    // a broken read skips the tick and never touches a Phase or a Verdict.
+    let feedTicks = 0;
+    const feedTimer = this.clock.setInterval(() => {
+      try {
+        const sample = driver.stepFeedSince(baseline);
+        if (sample !== null) this.feed = sample;
+        if (++feedTicks % FEED_RENDER_EVERY === 0) {
+          const blocks = driver.renderedBlocks(baseline);
+          if (blocks !== null) this.feedBlocks = blocks;
+        }
+      } catch {
+        // Contained: the next tick re-reads.
+      }
+    }, FEED_POLL_MS);
     let stopped = false;
     return {
       tripped: trip.promise,
@@ -557,9 +584,18 @@ export class TurnRunner {
         stopped = true;
         this.clock.clearTimeout(deadline);
         this.clock.clearInterval(freeze);
+        this.clock.clearInterval(feedTimer);
         await errors.stop();
       },
     };
+  }
+
+  // The latest per-step sample (story 14): step counter, last tool call and
+  // result, the running answer, the rendered block count. freebuff_progress
+  // merges it into its details; nothing else consumes it.
+  feedSample(): (StepFeed & { blocks?: number }) | null {
+    if (this.feed === null) return null;
+    return this.feedBlocks === null ? { ...this.feed } : { ...this.feed, blocks: this.feedBlocks };
   }
 
   // Screen lines carrying a known error marker during the working phase are

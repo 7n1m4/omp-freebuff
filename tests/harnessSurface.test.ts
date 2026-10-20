@@ -70,8 +70,10 @@ interface RejectionDetails {
 // The merged freebuff_status details: base diagnostics (src/status.ts) plus
 // the singleton's queue/activeTask extra.
 interface StatusDetails {
-  lock: { state: string };
+  lock: { state: string; ownerPid?: number };
   instancePid?: number;
+  hourMinutesLeft?: number;
+  screenDrift?: boolean;
   target?: string;
   foreign: { live: unknown[] };
   archive: { count: number };
@@ -326,6 +328,16 @@ describe("freebuff tool surface over the singleton (harness tier)", () => {
         const progress = lastToolResult(owner, "freebuff_progress");
         expect(progress.isError).toBe(false);
         expect(progress.details as ProgressDetails).toMatchObject({ phase: "working", phaseSource: "chat-store" });
+
+        // The per-step feed (story 14): the stub logs its step line at Ack
+        // time, so the working progress carries the sample once a feed tick
+        // (200 ms) has run. Polled through the public seam, not a model turn.
+        await waitFor(() => {
+          const details = singleton().progress(undefined, directBinding(owner));
+          return details.steps === 1 && details.lastToolCall === "run_terminal_command";
+        });
+        const fed = singleton().progress(undefined, directBinding(owner));
+        expect(fed.lastToolResult).toBe("run_terminal_command");
 
         const pid = singleton().instancePid();
         expect(pid).not.toBeNull();

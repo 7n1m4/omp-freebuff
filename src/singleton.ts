@@ -72,6 +72,13 @@ export interface ProgressDetails {
   /** Known error lines the run's watcher saw; absent when there were none. */
   warnings?: string[];
   position?: number;
+  /** Per-step feed (story 14): present once the working turn has logged a step. */
+  steps?: number;
+  lastToolCall?: string;
+  lastToolResult?: string;
+  partialAnswer?: string;
+  /** The rendered chat store's block count, sampled at the feed's slow cadence. */
+  blocks?: number;
 }
 
 export interface SingletonStatus {
@@ -405,7 +412,7 @@ export class FreebuffSingleton {
     if (task.ownerSessionId !== binding.sessionId) {
       fail({ code: "not_owner", message: this.ownerMessage(task) });
     }
-    return {
+    const details: ProgressDetails = {
       taskId: task.taskId,
       phase: task.phase,
       phaseSource: task.phaseSource,
@@ -418,6 +425,18 @@ export class FreebuffSingleton {
       warnings: task.warnings.length > 0 ? task.warnings : undefined,
       position: task.phase === "queued" ? this.queue.indexOf(task.taskId) + 1 : undefined,
     };
+    // The per-step feed (story 14) rides the active Task's progress: step
+    // counter, last tool call and result, the running answer, the rendered
+    // block count. A settled or queued Task has no feed to ride.
+    const feed = task.taskId === this.activeTaskId ? this.runner?.feedSample() : null;
+    if (feed !== null && feed !== undefined) {
+      details.steps = feed.step;
+      if (feed.lastToolCall !== undefined) details.lastToolCall = feed.lastToolCall;
+      if (feed.lastToolResult !== undefined) details.lastToolResult = feed.lastToolResult;
+      if (feed.partialAnswer !== undefined) details.partialAnswer = feed.partialAnswer;
+      if (feed.blocks !== undefined) details.blocks = feed.blocks;
+    }
+    return details;
   }
 
   // Truthful only: what the queue and the active slot hold right now.

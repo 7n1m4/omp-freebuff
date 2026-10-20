@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
-import { detectTurnEnd, lineMentionsPrompt, newestChatDir, partialAnswer, projectKey, readChats } from "../src/protocol/chatStore";
+import { detectTurnEnd, lineMentionsPrompt, newestChatDir, partialAnswer, projectKey, readChats, renderedBlockCount, stepFeedSince } from "../src/protocol/chatStore";
 import type { ChatDirSnapshot, TurnBaseline } from "../src/protocol/chatStore";
 
 const dir = new URL("./fixtures/chat/", import.meta.url);
@@ -212,5 +212,75 @@ describe("readChats", () => {
       logSnap(chats, "chat-a", "only line\n"),
       { dirName: "chat-b", mtimeMs: statSync(join(chats, "chat-b")).mtimeMs, logBytes: 0, logText: "" },
     ]);
+  });
+});
+
+describe("stepFeedSince", () => {
+  const stepLine = (step: number, data: Record<string, unknown>): string =>
+    `${JSON.stringify({ level: "DEBUG", msg: `End agent base3-free-catalog step ${step} (id)`, data })}\n`;
+
+  it("reads null before any step line exists", () => {
+    const text = load("full-turn.jsonl");
+    expect(stepFeedSince([snap("chat-001", 1000, text)], { dirName: "chat-001", logBytes: 0 })).toBeNull();
+  });
+
+  it("extracts the newest step, its tool names and the running answer", () => {
+    const text =
+      `${JSON.stringify({ msg: "hello" })}\n` +
+      stepLine(1, {
+        toolCalls: [{ toolName: "run_terminal_command" }],
+        toolResults: [{ toolName: "run_terminal_command" }],
+        fullResponse: "",
+      }) +
+      stepLine(2, {
+        toolCalls: [{ toolName: "edit_file" }],
+        toolResults: [{ toolName: "edit_file" }],
+        fullResponse: "half done",
+      });
+    // Only the newest step line speaks: step 2's tools and its running answer.
+    const feed = stepFeedSince([snap("chat-001", 1000, text)], { dirName: "chat-001", logBytes: 0 });
+    expect(feed).toEqual({
+      step: 2,
+      lastToolCall: "edit_file",
+      lastToolResult: "edit_file",
+      partialAnswer: "half done",
+    });
+  });
+
+  it("scans only the baseline's tail, then newer dirs oldest first", () => {
+    const older = stepLine(1, { toolCalls: [{ toolName: "a" }] });
+    const newerText = stepLine(2, { toolCalls: [{ toolName: "b" }] });
+    const base = snap("chat-001", 1000, `${JSON.stringify({ msg: "hello" })}\n${older}`);
+    const baseline = { dirName: "chat-001", logBytes: bytes(JSON.stringify({ msg: "hello" }) + "\n") };
+    // The step before the baseline never counts; the newer dir's step does.
+    expect(stepFeedSince([base, snap("chat-002", 2000, newerText)], baseline)).toEqual({
+      step: 2,
+      lastToolCall: "b",
+    });
+  });
+
+  it("tolerates malformed and half-flushed lines between steps", () => {
+    const text = `${stepLine(1, { toolCalls: [{ toolName: "a" }] })}{"level":"DEBUG","msg":"End agent x step `;
+    expect(stepFeedSince([snap("chat-001", 1000, text)], { dirName: "chat-001", logBytes: 0 })).toEqual({
+      step: 1,
+      lastToolCall: "a",
+    });
+  });
+});
+
+describe("renderedBlockCount", () => {
+  it("counts the rendered store's blocks and reads a torn rewrite as null", () => {
+    const root = mkdtempSync(join(tmpdir(), "chat-rendered-"));
+    try {
+      const chatDir = join(root, "projects", "ws", "chats", "chat-001");
+      mkdirSync(chatDir, { recursive: true });
+      expect(renderedBlockCount(root, "C:\\work\\ws", "chat-001")).toBeNull();
+      writeFileSync(join(chatDir, "chat-messages.json"), JSON.stringify([{ role: "user" }, { role: "agent" }]));
+      expect(renderedBlockCount(root, "C:\\work\\ws", "chat-001")).toBe(2);
+      writeFileSync(join(chatDir, "chat-messages.json"), '{"torn');
+      expect(renderedBlockCount(root, "C:\\work\\ws", "chat-001")).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
