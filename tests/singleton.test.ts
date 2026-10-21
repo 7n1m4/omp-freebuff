@@ -20,7 +20,7 @@ import {
 } from "../src/singleton";
 import type { TurnRunnerOptions } from "../src/turnRunner";
 import { resolveTarget } from "../src/workspace";
-import { driveGuard, driveReject, guard, pumpUntil, rejectionOf, type Guard } from "./helpers/guards";
+import { driveGuard, driveReject, guard, pumpUntil, rejectionOf, unwrapOrThrow, type Guard } from "./helpers/guards";
 import { VirtualClock } from "./helpers/virtualClock";
 import { ScriptedDriver } from "./helpers/scriptedDriver";
 
@@ -107,7 +107,13 @@ const sing = (): FreebuffSingleton =>
         return driver;
       },
     },
-    tick: { now: clock.now, setInterval: clock.setInterval, clearInterval: clock.clearInterval },
+    tick: {
+      now: clock.now,
+      setInterval: clock.setInterval,
+      clearInterval: clock.clearInterval,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+    },
     paintTickMs: paintTickMsOverride ?? 1000,
   }));
 
@@ -1129,5 +1135,209 @@ describe("FreebuffSingleton (process-scoped, scripted drivers, virtual clock)", 
       expect(freshMeta.phaseLog.at(-1)).toContain("done@");
       expect(pushes).toHaveLength(1);
     });
+  });
+});
+
+// -- Bounded wait (ADR-0008): waitOne, the freebuff_wait seam ------------------
+
+describe("bounded wait (ADR-0008, scripted drivers, virtual clock)", () => {
+  // An ack 60 ms after the paste, the turn parked in working for the wait to
+  // race; endAnswer scripts any follow-up turn to complete by itself.
+  const workingSubmit = async (): Promise<SubmitOk> => {
+    onCreated = ackSoon;
+    return await driveGuard(clock, guard(sing().submit(submitInput())));
+  };
+
+  test("waitOne resolves settled with the stored answer at the task's settle", async () => {
+    const ok = await workingSubmit();
+    const waited = guard(sing().waitOne(owner, ok.taskId, 60_000));
+
+    drivers[0].endTurn(ANSWER);
+    const outcome = await driveGuard(clock, waited);
+    if (outcome.kind !== "settled") throw new Error(`expected settled, got ${outcome.kind}`);
+    expect(outcome.details).toMatchObject({
+      taskId: ok.taskId,
+      phase: "done",
+      phaseSource: "verdict",
+      answer: ANSWER,
+    });
+    // The wait read what settle stored; the push fired exactly once regardless.
+    await pumpUntil(clock, () => pushes.length === 1);
+    expect(pushes[0]).toMatchObject({ taskId: ok.taskId, ok: true, answer: ANSWER });
+    expect(pushes).toHaveLength(1);
+  });
+
+  test("waitOne resolves settled with the failed payload when the turn fails", async () => {
+    const ok = await workingSubmit();
+    const waited = guard(sing().waitOne(owner, undefined, 60_000));
+
+    // A turn ending without an answer is the runner's own failure verdict.
+    drivers[0].endTurn(null);
+    const outcome = await driveGuard(clock, waited);
+    if (outcome.kind !== "settled") throw new Error(`expected settled, got ${outcome.kind}`);
+    expect(outcome.details).toMatchObject({
+      taskId: ok.taskId,
+      phase: "failed",
+      phaseSource: "verdict",
+      verdict: "no_answer",
+      message: "the turn ended without an answer",
+    });
+  });
+
+  test("an already-settled named task resolves immediately with its stored payload", async () => {
+    const ok = await workingSubmit();
+    drivers[0].endTurn(ANSWER);
+    await pumpUntil(clock, () => pushes.length === 1);
+
+    // No virtual time passes: a plain await settles on the stored fields.
+    const outcome = await sing().waitOne(owner, ok.taskId, 60_000);
+    if (outcome.kind !== "settled") throw new Error(`expected settled, got ${outcome.kind}`);
+    expect(outcome.details).toMatchObject({ taskId: ok.taskId, phase: "done", answer: ANSWER });
+  });
+
+  test("no unsettled owned task resolves none, before and after a settle", async () => {
+    expect(await sing().waitOne(owner, undefined, 60_000)).toEqual({ kind: "none" });
+
+    const ok = await workingSubmit();
+    drivers[0].endTurn(ANSWER);
+    await pumpUntil(clock, () => pushes.length === 1);
+    expect(await sing().waitOne(owner, undefined, 60_000)).toEqual({ kind: "none" });
+    // The settled task is still reachable by name, and only by name.
+    const outcome = await sing().waitOne(owner, ok.taskId, 60_000);
+    if (outcome.kind !== "settled") throw new Error(`expected settled, got ${outcome.kind}`);
+  });
+
+  test("the timeout bound resolves with a fresh snapshot, exactly once", async () => {
+    const ok = await workingSubmit();
+    const waited = guard(sing().waitOne(owner, ok.taskId, 500));
+
+    await clock.advance(500);
+    const outcome = await unwrapOrThrow(waited);
+    if (outcome.kind !== "timeout") throw new Error(`expected timeout, got ${outcome.kind}`);
+    expect(outcome.details).toMatchObject({ taskId: ok.taskId, phase: "working" });
+
+    // The bound consumed its timer: the late settle resolves nobody twice and
+    // the task still reaches its own verdict.
+    drivers[0].endTurn(ANSWER);
+    await pumpUntil(clock, () => pushes.length === 1);
+    expect(progressOf(ok.taskId)).toMatchObject({ phase: "done", answer: ANSWER });
+    expect(pushes).toHaveLength(1);
+  });
+
+  test("consecutive taskId-less waits drain the queue stepwise: active first, then queue order", async () => {
+    const first = await workingSubmit();
+    const second = await sing().submit(submitInput());
+    expect(second).toMatchObject({ phase: "queued", position: 1 });
+
+    const waitFirst = guard(sing().waitOne(owner, undefined, 60_000));
+    // The drained task acks on its paste but stays working, so wait #2 can
+    // register before its turn ends.
+    drivers[0].afterPaste = () => {
+      drivers[0].ack(PROMPT);
+    };
+    drivers[0].endTurn(ANSWER);
+    const one = await driveGuard(clock, waitFirst);
+    if (one.kind !== "settled") throw new Error(`expected settled, got ${one.kind}`);
+    expect(one.details.taskId).toBe(first.taskId);
+
+    // The drained task is now the oldest unsettled: the next wait picks the
+    // queued one without naming it, on the same live Instance (ADR-0001).
+    const waitSecond = guard(sing().waitOne(owner, undefined, 60_000));
+    drivers[0].endTurn(ANSWER);
+    const two = await driveGuard(clock, waitSecond);
+    if (two.kind !== "settled") throw new Error(`expected settled, got ${two.kind}`);
+    expect(two.details.taskId).toBe(second.taskId);
+
+    expect(await sing().waitOne(owner, undefined, 60_000)).toEqual({ kind: "none" });
+  });
+
+  test("a foreign task refuses the wait: at the gate while in flight, by name once settled", async () => {
+    const first = await workingSubmit();
+    const other = bindingOf("session-other", "Other Session");
+
+    expect(syncErr(() => sing().waitOne(other, undefined, 60_000))).toMatchObject({ code: "not_owner" });
+    expect(syncErr(() => sing().waitOne(other, first.taskId, 60_000))).toMatchObject({ code: "not_owner" });
+
+    drivers[0].endTurn(ANSWER);
+    await pumpUntil(clock, () => pushes.length === 1);
+    // Settled tasks are still owner-scoped: the gate passes, the name refuses.
+    expect(syncErr(() => sing().waitOne(other, first.taskId, 60_000))).toMatchObject({ code: "not_owner" });
+    expect(await sing().waitOne(other, undefined, 60_000)).toEqual({ kind: "none" });
+  });
+
+  test("an unknown taskId is the same structured refusal progress gives", async () => {
+    expect(syncErr(() => sing().waitOne(owner, "task-nope", 60_000))).toEqual({
+      code: "unknown_task",
+      message: "no freebuff task task-nope",
+    });
+  });
+
+  test("a user interrupt of the working task ends the wait with the detach marker; the task still settles", async () => {
+    const ok = await workingSubmit();
+    const waited = guard(sing().waitOne(owner, ok.taskId, 60_000));
+
+    sing().interrupt(owner, "Interrupted by user");
+    const outcome = await driveGuard(clock, waited);
+    if (outcome.kind !== "detached") throw new Error(`expected detached, got ${outcome.kind}`);
+    expect(outcome.details).toMatchObject({ taskId: ok.taskId, phase: "working" });
+
+    // ADR-0003: the detach keeps the Task running to its real verdict.
+    drivers[0].endTurn(ANSWER);
+    await pumpUntil(clock, () => pushes.length === 1);
+    expect(pushes[0]).toMatchObject({ taskId: ok.taskId, ok: true, answer: ANSWER });
+    expect(progressOf(ok.taskId)).toMatchObject({ phase: "done", answer: ANSWER });
+  });
+
+  test("a user interrupt dequeuing the waited queued task ends its wait with the marker", async () => {
+    const first = await workingSubmit();
+    const second = await sing().submit(submitInput());
+    const waited = guard(sing().waitOne(owner, second.taskId, 60_000));
+
+    sing().interrupt(owner, "Interrupted by user");
+    const outcome = await driveGuard(clock, waited);
+    if (outcome.kind !== "cancelled") throw new Error(`expected cancelled, got ${outcome.kind}`);
+    // The snapshot was composed while the record still sat at its position.
+    expect(outcome.details).toMatchObject({ taskId: second.taskId, phase: "queued", position: 1 });
+    expect(syncErr(() => progressOf(second.taskId))).toMatchObject({ code: "unknown_task" });
+    expect(sing().statusExtra()).toEqual({
+      queue: { depth: 0, taskIds: [] },
+      activeTask: { taskId: first.taskId, phase: "working" },
+    });
+  });
+
+  test("an interrupt that cancels the waited task resolves the wait with the cancelled settle", async () => {
+    const ok = await workingSubmit();
+    const waited = guard(sing().waitOne(owner, undefined, 60_000));
+
+    // A non-user abort reason cancels even a working task; the ladder's settle
+    // is what the wait reads — the cancelled Verdict, not a marker.
+    sing().interrupt(owner, "AbortError");
+    drivers[0].isAlive = false; // the ladder's kill lands
+    const outcome = await driveGuard(clock, waited);
+    if (outcome.kind !== "settled") throw new Error(`expected settled, got ${outcome.kind}`);
+    expect(outcome.details).toMatchObject({ taskId: ok.taskId, phase: "failed", verdict: "cancelled" });
+  });
+
+  test("a second waitOne while a Wait is parked on the task is a caller bug and throws", async () => {
+    const ok = await workingSubmit();
+    guard(sing().waitOne(owner, ok.taskId, 60_000));
+
+    expect(syncErr(() => sing().waitOne(owner, ok.taskId, 60_000))).toEqual({
+      code: "wait_parked",
+      message: "a Wait is already parked on this Task",
+    });
+  });
+
+  test("a dispose while parked resolves the wait as disposed, timer cleared", async () => {
+    const ok = await workingSubmit();
+    const waited = guard(sing().waitOne(owner, ok.taskId, 60_000));
+
+    sing().dispose();
+    const outcome = await driveGuard(clock, waited);
+    if (outcome.kind !== "disposed") throw new Error(`expected disposed, got ${outcome.kind}`);
+    expect(outcome.details).toMatchObject({ taskId: ok.taskId, phase: "working" });
+
+    // The lapsed bound never fires a second marker: the drain cleared the timer.
+    await clock.advance(60_000);
   });
 });

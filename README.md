@@ -2,7 +2,7 @@
 
 An in-process [OMP](https://omp.sh) extension that drives the freebuff CLI's
 terminal UI through a PTY. It runs one machine-wide freebuff Instance in one
-shared Workspace and exposes five tools, all `loadMode: "essential"`. It is the
+shared Workspace and exposes six tools, all `loadMode: "essential"`. It is the
 in-process replacement for the freebuff-supervisor MCP server/daemon: no
 daemon, no named pipe, no process of its own. Windows-only.
 
@@ -64,7 +64,7 @@ reload.
 
 ## Tools
 
-All five tools return errors as
+All six tools return errors as
 `{isError: true, content: [<message>], details: {code, message, ...}}`; the
 `details` extras are listed per error below.
 
@@ -96,6 +96,23 @@ A `done` Task
 returns the verbatim answer as the tool text; a `failed` Task is an
 `isError` result carrying the Verdict, the reason and a screen excerpt.
 Errors: `unknown_task`, `not_owner`.
+
+### `freebuff_wait { taskId?: string, timeoutSec?: number }`
+
+Blocks until one Task settles and returns at the Verdict, so a turn holds a
+long Task without polling (ADR-0008): a `done` Task returns the verbatim
+answer, a `failed` Task the same `isError` line `freebuff_progress` renders,
+and an already-settled Task returns its stored result immediately. Omitted
+`taskId` waits for the oldest unsettled owned Task — the active one first,
+then the queue head — so consecutive waits drain the queue stepwise.
+`timeoutSec` uses the bounds `freebuff_wait` declares: the tool's description
+states the default and the clamp, and the code reads those same constants. A
+lapsed bound returns a progress snapshot with "Still settling — call
+freebuff_wait again to keep waiting.", and no unsettled owned Task returns
+"Nothing in flight" as a normal result. While it blocks, the call emits a progress snapshot about
+every five seconds. Owner-gated like `freebuff_progress`; errors:
+`unknown_task`, `not_owner`. A user Esc aborts the call, not a working Task —
+it detaches (ADR-0003) — while a queued Task is cancelled.
 
 ### `freebuff_cancel {}`
 
@@ -244,7 +261,7 @@ per freeze key, write-only.
 
 ## Repository layout
 
-- `src/index.ts` — extension factory: the five tools, `/freebuff-doctor`,
+- `src/index.ts` — extension factory: the six tools, `/freebuff-doctor`,
   per-session owner bindings.
 - `src/singleton.ts` — the process-scoped singleton: queue, Task registry,
   ownership gate, Instance drive.
@@ -271,7 +288,9 @@ per freeze key, write-only.
 - `scripts/register-keeper-task.ps1` — registers the daily 21:00 Task
   Scheduler entry (bun + `scripts\keeper.ts`); `-Unregister` removes it,
   `-WhatIf` dry-runs.
-- `skills/freebuff/SKILL.md` — the bundled skill the host loads on demand.
+- `skills/freebuff/SKILL.md` — the bundled skill; `disable-model-invocation:
+  true` keeps it invisible to the model, reachable only via `/skill:freebuff` /
+  `skill://freebuff`.
 - `tests/` — unit tests per module, corpus tests over the recorded screen
   fixtures, the host-seam policy guard, stub end-to-end tests over
   `tests/helpers/stub-freebuff.mjs`, and the SDK harness tier that drives the
@@ -291,4 +310,4 @@ per freeze key, write-only.
   ADR-0003 three endings — cancel, detach, abandon; ADR-0004 Task state is
   process-scoped; ADR-0005 the repo checkout is the extension package; ADR-0006
   the run tool returns at the Ack; ADR-0007 the directory-line guard is
-  dropped.
+  dropped; ADR-0008 the bounded Wait tool.

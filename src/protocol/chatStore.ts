@@ -103,51 +103,78 @@ export function hasLineSince(snap: ChatDirSnapshot, fromBytes: number, test: (js
 // mention is an exact match or a labeled paste carrying the prompt as its tail.
 export function lineMentionsPrompt(json: Record<string, unknown>, prompt: string): boolean {
   if (json[MSG_KEY] === prompt) return true;
-  const data = typeof json.data === "object" && json.data !== null ? (json.data as Record<string, unknown>) : null;
-  const stored = data?.prompt;
+  const stored = dataOrNull(json)?.prompt;
   return typeof stored === "string" && (stored === prompt || stored.endsWith(prompt));
 }
 
-// The answer sits on the nearest earlier shouldEndTurn line (its data.fullResponse,
-// else the top-level field); with none found the turn still ends, answerless — the
-// caller turns that into the no_answer verdict.
+// The data payload convention: protocol fields live under `data` with the
+// top-level field as the fallback. dataOrNull preserves the missing case.
+const dataOrNull = (json: Record<string, unknown>): Record<string, unknown> | null =>
+  typeof json.data === "object" && json.data !== null ? (json.data as Record<string, unknown>) : null;
+
+// The answer key read across data-then-top-level: one convention, shared by
+// the turn-end scan and the cancel partial, so the two cannot drift.
+const responseOf = (json: Record<string, unknown>): string | null => {
+  const data = dataOrNull(json);
+  return typeof data?.[FULL_RESPONSE_KEY] === "string"
+    ? (data[FULL_RESPONSE_KEY] as string)
+    : typeof json[FULL_RESPONSE_KEY] === "string"
+      ? (json[FULL_RESPONSE_KEY] as string)
+      : null;
+};
+
+// shouldEndTurn read across top-level-then-data, matching responseOf.
+const endFlagOf = (json: Record<string, unknown>, value: boolean): boolean => {
+  const data = dataOrNull(json);
+  return json[SHOULD_END_TURN_KEY] === value || data?.[SHOULD_END_TURN_KEY] === value;
+};
+
+// The answer sits on the nearest earlier shouldEndTurn line; with none found
+// the turn still ends, answerless — the caller turns that into no_answer.
 function completionAt(lines: JsonLine[], i: number): TurnEndResult {
   for (let j = i - 1; j >= 0; j--) {
     const prev = lines[j].json;
-    if (prev === null) continue;
-    const data = typeof prev.data === "object" && prev.data !== null ? (prev.data as Record<string, unknown>) : null;
-    if (prev[SHOULD_END_TURN_KEY] !== true && data?.[SHOULD_END_TURN_KEY] !== true) continue;
-    const answer =
-      typeof data?.[FULL_RESPONSE_KEY] === "string"
-        ? data[FULL_RESPONSE_KEY]
-        : typeof prev[FULL_RESPONSE_KEY] === "string"
-          ? prev[FULL_RESPONSE_KEY]
-          : null;
-    return { done: true, answer };
+    if (prev === null || !endFlagOf(prev, true)) continue;
+    return { done: true, answer: responseOf(prev) };
   }
   return { done: true, answer: null };
 }
 
 // The partial answer of a cancelled Turn: the LAST unfinished-step line
-// (shouldEndTurn:false, top-level or under data) that carries a fullResponse
-// (data else top-level), so the stop keeps the current step's report. Key
-// handling mirrors completionAt; no unfinished step reads as null.
+// (shouldEndTurn:false) that carries a fullResponse, so the stop keeps the
+// current step's report. No unfinished step reads as null.
 export function partialAnswer(logText: string): string | null {
   const lines = logLines(logText);
   for (let i = lines.length - 1; i >= 0; i--) {
     const json = lines[i].json;
-    if (json === null) continue;
-    const data = typeof json.data === "object" && json.data !== null ? (json.data as Record<string, unknown>) : null;
-    if (json[SHOULD_END_TURN_KEY] !== false && data?.[SHOULD_END_TURN_KEY] !== false) continue;
-    const answer =
-      typeof data?.[FULL_RESPONSE_KEY] === "string"
-        ? data[FULL_RESPONSE_KEY]
-        : typeof json[FULL_RESPONSE_KEY] === "string"
-          ? json[FULL_RESPONSE_KEY]
-          : null;
+    if (json === null || !endFlagOf(json, false)) continue;
+    const answer = responseOf(json);
     if (answer !== null) return answer;
   }
   return null;
+}
+
+// The Turn's dirs: the baseline dir plus every dir newer than it (freebuff
+// rotates dirs per chat); older dirs never carry this Turn's lines. With no
+// baseline dir on record, the whole store. Callers keep their own scan order.
+export function turnDirs(
+  snapshots: ChatDirSnapshot[],
+  baseline: TurnBaseline | null,
+): { base: ChatDirSnapshot | null; dirs: ChatDirSnapshot[] } {
+  const base = baseline === null ? null : (snapshots.find((s) => s.dirName === baseline.dirName) ?? null);
+  return { base, dirs: snapshots.filter((s) => base === null || s === base || byNewest(s, base) < 0) };
+}
+
+// The verbatim text of one dir's complete log lines at or after the byte
+// offset: the archive's slice of this Turn's log. A trailing fragment without
+// a newline is not a line yet and stays out.
+export function logSince(snap: ChatDirSnapshot, fromBytes: number): string {
+  const text = snap.logText;
+  const lines = logLines(text);
+  const first = lines.find((line) => line.byteStart >= fromBytes);
+  if (first === undefined) return "";
+  const last = lines[lines.length - 1];
+  return text.slice(first.start, text.indexOf("\n", last.start) + 1);
 }
 
 function scanDir(snap: ChatDirSnapshot, from: number): TurnEndResult | null {
@@ -160,18 +187,15 @@ function scanDir(snap: ChatDirSnapshot, from: number): TurnEndResult | null {
   return null;
 }
 
-// Turn end = the first `Main prompt finished` line at or after the baseline; a newer
-// chat dir (freebuff rotates dirs per chat) is scanned from zero.
+// Turn end = the first `Main prompt finished` line at or after the baseline;
+// newer chat dirs are scanned from zero.
 export function detectTurnEnd(snapshots: ChatDirSnapshot[], baseline: TurnBaseline): TurnEndResult {
-  const base = snapshots.find((s) => s.dirName === baseline.dirName);
-  if (base) {
+  const { base, dirs } = turnDirs(snapshots, baseline);
+  if (base !== null) {
     const hit = scanDir(base, baseline.logBytes);
     if (hit) return hit;
   }
-  const newer = base
-    ? snapshots.filter((s) => byNewest(s, base) < 0)
-    : snapshots.filter((s) => s.dirName !== baseline.dirName);
-  for (const snap of newer.sort(byNewest)) {
+  for (const snap of dirs.filter((s) => s !== base).sort(byNewest)) {
     const hit = scanDir(snap, 0);
     if (hit) return hit;
   }
@@ -193,9 +217,6 @@ const STEP_END_REGEX = /^End agent \S+ step (\d+)/;
 const TOOL_CALLS_KEY = "toolCalls";
 const TOOL_RESULTS_KEY = "toolResults";
 
-const dataOf = (json: Record<string, unknown>): Record<string, unknown> =>
-  typeof json.data === "object" && json.data !== null ? (json.data as Record<string, unknown>) : json;
-
 const lastToolName = (data: Record<string, unknown>, key: string): string | undefined => {
   const entries = data[key];
   if (!Array.isArray(entries)) return undefined;
@@ -212,11 +233,8 @@ const lastToolName = (data: Record<string, unknown>, key: string): string | unde
 // chronological order (the baseline's tail, then newer dirs oldest first); a
 // store with no step line yet reads as null.
 export function stepFeedSince(snapshots: ChatDirSnapshot[], baseline: TurnBaseline): StepFeed | null {
-  const base = snapshots.find((s) => s.dirName === baseline.dirName);
-  const newer = (base
-    ? snapshots.filter((s) => byNewest(s, base) < 0)
-    : snapshots.filter((s) => s.dirName !== baseline.dirName)
-  ).sort((a, b) => byNewest(b, a));
+  const { base, dirs } = turnDirs(snapshots, baseline);
+  const newer = dirs.filter((s) => s !== base).sort((a, b) => byNewest(b, a));
   const found: { step: number; data: Record<string, unknown> | null } = { step: 0, data: null };
   const scan = (snap: ChatDirSnapshot, from: number): void => {
     for (const line of logLines(snap.logText)) {
@@ -224,10 +242,10 @@ export function stepFeedSince(snapshots: ChatDirSnapshot[], baseline: TurnBaseli
       const match = STEP_END_REGEX.exec(String(line.json[MSG_KEY] ?? ""));
       if (match === null) continue;
       found.step = Number(match[1]);
-      found.data = dataOf(line.json);
+      found.data = dataOrNull(line.json) ?? line.json;
     }
   };
-  if (base) scan(base, baseline.logBytes);
+  if (base !== null) scan(base, baseline.logBytes);
   for (const snap of newer) scan(snap, 0);
   if (found.step === 0 || found.data === null) return null;
   const feed: StepFeed = { step: found.step };

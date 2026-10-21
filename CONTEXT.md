@@ -85,6 +85,10 @@ changes. Grows as wayfinder tickets resolve.
   `deadline`, `frozen`, `crashed`, `no_answer`, `driver_error`, `slot_held`,
   `displaced`, `cancelled`. Only the extension decides a Task is stuck; the
   parent polls and cancels.
+- **Wait**: the Owner session blocking on an unsettled Task for a bounded time,
+  returning at the Task's Verdict or at timeout, whichever comes first. Esc
+  during a Wait detaches a working Task and ends the Wait; the Cancel/Detach
+  rules are unchanged (ADR-0008).
 - **Cancel**: the Owner's explicit stop of the active Task — the whitelisted Esc
   and Ctrl-C, escalating to a forced kill. The Instance exits, the Task yields
   under `cancelled`, and queued Tasks run on. _Avoid:_ "abort", "interrupt"

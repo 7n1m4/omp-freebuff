@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
-import { detectTurnEnd, lineMentionsPrompt, newestChatDir, partialAnswer, projectKey, readChats, renderedBlockCount, stepFeedSince } from "../src/protocol/chatStore";
+import { detectTurnEnd, lineMentionsPrompt, logSince, newestChatDir, partialAnswer, projectKey, readChats, renderedBlockCount, stepFeedSince, turnDirs } from "../src/protocol/chatStore";
 import type { ChatDirSnapshot, TurnBaseline } from "../src/protocol/chatStore";
 
 const dir = new URL("./fixtures/chat/", import.meta.url);
@@ -69,6 +69,38 @@ describe("newestChatDir", () => {
     const a = snap("chat-a", 1000, "");
     const b = snap("chat-b", 1000, "");
     expect(newestChatDir([a, b])).toBe(b);
+  });
+});
+
+describe("logSince", () => {
+  it("cuts the baseline dir at the baseline byte: earlier Turns' lines stay out", () => {
+    const earlier = '{"msg":"Main prompt finished"}\n';
+    const current = '{"msg":"End agent a1 step 1"}\n';
+    const text = earlier + current;
+    const at = snap("chat-001", 1000, text);
+    expect(logSince(at, bytes(earlier))).toBe(current);
+    expect(logSince(at, 0)).toBe(text);
+  });
+
+  it("drops a trailing fragment without a newline", () => {
+    const text = '{"msg":"a"}\n{"msg":"b"}';
+    expect(logSince(snap("chat-001", 1000, text), 0)).toBe('{"msg":"a"}\n');
+  });
+});
+
+describe("turnDirs", () => {
+  const older = snap("chat-0", 500, "");
+  const base = snap("chat-1", 1000, "");
+  const newer = snap("chat-2", 2000, "");
+
+  it("keeps the baseline dir and everything newer, never older", () => {
+    const { base: found, dirs } = turnDirs([older, base, newer], baselineOf(base));
+    expect(found).toBe(base);
+    expect(dirs).toEqual([base, newer]);
+  });
+
+  it("with no baseline, the whole store", () => {
+    expect(turnDirs([older, base], null).dirs).toEqual([older, base]);
   });
 });
 

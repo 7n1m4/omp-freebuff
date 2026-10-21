@@ -1,4 +1,4 @@
-// Ticket #20 slice 3, harness tier: the five-tool surface (src/index.ts) driven
+// Ticket #20 slice 3, harness tier: the six-tool surface (src/index.ts) driven
 // end to end through real agent sessions against the stub child over a real
 // PTY, on the process-scoped singleton (ADR-0004). One test per acceptance
 // criterion; each test owns a fresh rig (temp plugin/config/workspace dirs +
@@ -39,6 +39,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent";
 import type { ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import freebuff from "../src/index";
@@ -53,6 +54,7 @@ import { eventsOf, kindsOf, readInputLog } from "./helpers/stubInputLog";
 const stubPath = join(import.meta.dir, "helpers", "stub-freebuff.mjs");
 const TIMINGS = { settleMs: 4_000, ackMs: 1_500, pollMs: 25, pasteSettleMs: 60, pressThrottleMs: 120 };
 const PROMPT = "probe the freebuff surface";
+const PROMPT2 = "probe the freebuff surface again";
 const ANSWER = `stub(DeepSeek V4.1 Flash): ${PROMPT}`;
 // The settle push starts its own turn on an idle session; spare plain replies
 // keep those turns fed no matter where they land.
@@ -105,6 +107,10 @@ const screenCall = (): MockResponse[] => [
 const cancelCall = (): MockResponse[] => [
   { content: [{ type: "toolCall", name: "freebuff_cancel", arguments: {} }] },
   { content: ["cancelled"] },
+];
+const waitCall = (args: { taskId?: string; timeoutSec?: number } = {}): MockResponse[] => [
+  { content: [{ type: "toolCall", name: "freebuff_wait", arguments: args }] },
+  { content: ["waited"] },
 ];
 
 interface Rig {
@@ -348,6 +354,364 @@ describe("freebuff tool surface over the singleton (harness tier)", () => {
     },
     60_000,
   );
+
+  // -- freebuff_wait: the nine behaviours, self-documented (ADR-0008) ----------
+  // Each behaviour names the test that pins it; this suite covers 9/9.
+  // 1. settled-answer     "freebuff_wait blocks on the working task and returns the verbatim answer at its settle"
+  // 2. settled-failed     "freebuff_wait returns the failed line as an error result when the task settles failed"
+  // 3. already-settled    "freebuff_wait on an already-settled task returns its stored answer immediately"
+  // 4. nothing-in-flight  "freebuff_wait with nothing in flight says so as a normal result"
+  // 5. timeout            "freebuff_wait returns the snapshot and the call-again line when its bound lapses"
+  // 6. stepwise drain     "freebuff_wait without taskId drains two tasks stepwise: the oldest settles first, then the queued one"
+  // 7. not_owner          "freebuff_wait from a second session on the owned task is refused not_owner"
+  // 8. unknown taskId     "freebuff_wait naming an unknown task is refused unknown_task"
+  // 9. abort-detach       "the session's stop signal detaches the working task: the wait reports it and the task still settles"
+  // The ~5 s snapshot feed has its own test below the nine.
+  describe("freebuff_wait (nine behaviours, harness tier)", () => {
+    test(
+      "freebuff_wait blocks on the working task and returns the verbatim answer at its settle",
+      async () => {
+        openRig("happy", { endDelayMs: 2500 });
+        const owner = await createHarnessSession({
+          extensions: [freebuff],
+          responses: [...runCall(PROMPT), ...waitCall(), ...SPARES],
+        });
+        try {
+          expect(await owner.session.prompt("run it")).toBe(true);
+          const run = lastToolResult(owner, "freebuff_run");
+          expect(run.isError).toBe(false);
+          const taskId = (run.details as SubmitOk).taskId;
+
+          // The wait is called while the stub turn is still in flight and holds
+          // the tool call until the real settle: the answer text is the stub's
+          // verbatim reply, and the details are the settled task's.
+          expect(await owner.session.prompt("wait for it")).toBe(true);
+          const wait = lastToolResult(owner, "freebuff_wait");
+          expect(wait.isError).toBe(false);
+          expect(textOf(wait)).toBe(ANSWER);
+          expect(wait.details as ProgressDetails).toMatchObject({ taskId, phase: "done", answer: ANSWER });
+        } finally {
+          await owner.dispose();
+        }
+      },
+      60_000,
+    );
+
+    test(
+      "freebuff_wait returns the failed line as an error result when the task settles failed",
+      async () => {
+        openRig("no-answer", { endDelayMs: 500 });
+        const owner = await createHarnessSession({
+          extensions: [freebuff],
+          responses: [...runCall(PROMPT), ...waitCall(), ...SPARES],
+        });
+        try {
+          expect(await owner.session.prompt("run it")).toBe(true);
+          const taskId = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+
+          expect(await owner.session.prompt("wait for it")).toBe(true);
+          const wait = lastToolResult(owner, "freebuff_wait");
+          expect(wait.isError).toBe(true);
+          expect(textOf(wait)).toBe(`freebuff task ${taskId} failed (no_answer): the turn ended without an answer`);
+          expect(wait.details as ProgressDetails).toMatchObject({ taskId, phase: "failed", verdict: "no_answer" });
+        } finally {
+          await owner.dispose();
+        }
+      },
+      60_000,
+    );
+
+    test(
+      "freebuff_wait on an already-settled task returns its stored answer immediately",
+      async () => {
+        openRig("happy", { endDelayMs: 500 });
+        // The scripted wait names the task, but the id exists only after the
+        // run returns; the mock resolves handler functions per request, so the
+        // arguments read the captured id at call time. The bare "ack" absorbs
+        // the settle push's own turn, which fires the moment the task settles
+        // and the session is idle.
+        let settledTaskId = "";
+        const owner = await createHarnessSession({
+          extensions: [freebuff],
+          responses: [
+            ...runCall(PROMPT),
+            { content: ["ack"] },
+            () => ({ content: [{ type: "toolCall", name: "freebuff_wait", arguments: { taskId: settledTaskId } }] }),
+            { content: ["waited"] },
+            ...SPARES,
+          ],
+        });
+        try {
+          expect(await owner.session.prompt("run it")).toBe(true);
+          const run = lastToolResult(owner, "freebuff_run");
+          expect(run.isError).toBe(false);
+          settledTaskId = (run.details as SubmitOk).taskId;
+
+          // The settle push lands well before the wait is ever called.
+          await waitFor(() => pushMessages(owner).length > 0);
+          const push = settlePushOf(pushMessages(owner)[0]!);
+          expect(push).toMatchObject({ taskId: settledTaskId, ok: true, answer: ANSWER });
+          await sleep(500); // the push's spare turn drains before the wait's own
+
+          expect(await owner.session.prompt("wait for it")).toBe(true);
+          const wait = lastToolResult(owner, "freebuff_wait");
+          expect(wait.isError).toBe(false);
+          expect(textOf(wait)).toBe(ANSWER);
+          expect(wait.details as ProgressDetails).toMatchObject({
+            taskId: settledTaskId,
+            phase: "done",
+            answer: ANSWER,
+          });
+        } finally {
+          await owner.dispose();
+        }
+      },
+      30_000,
+    );
+
+    test(
+      "freebuff_wait with nothing in flight says so as a normal result",
+      async () => {
+        // No rig: the wait performs no I/O, so no Instance is ever spawned.
+        const owner = await createHarnessSession({ extensions: [freebuff], responses: [...waitCall(), ...SPARES] });
+        try {
+          expect(await owner.session.prompt("wait")).toBe(true);
+          const wait = lastToolResult(owner, "freebuff_wait");
+          expect(wait.isError).toBe(false);
+          expect(textOf(wait)).toBe(
+            "Nothing in flight: no queued or working freebuff Task owned by this session is unsettled.",
+          );
+        } finally {
+          await owner.dispose();
+        }
+      },
+      20_000,
+    );
+
+    test(
+      "freebuff_wait returns the snapshot and the call-again line when its bound lapses",
+      async () => {
+        openRig("happy", { endDelayMs: 4000 });
+        const owner = await createHarnessSession({
+          extensions: [freebuff],
+          responses: [...runCall(PROMPT), ...waitCall({ timeoutSec: 1 }), ...SPARES],
+        });
+        try {
+          expect(await owner.session.prompt("run it")).toBe(true);
+          expect((lastToolResult(owner, "freebuff_run").details as SubmitOk).phase).toBe("working");
+
+          // The one-second bound lapses well before the stub's turn ends, so the
+          // wait comes back as a normal result naming the still-working task.
+          expect(await owner.session.prompt("wait a bit")).toBe(true);
+          const wait = lastToolResult(owner, "freebuff_wait");
+          expect(wait.isError).toBe(false);
+          expect(textOf(wait)).toContain("working");
+          expect(textOf(wait)).toContain("Still settling — call freebuff_wait again to keep waiting.");
+        } finally {
+          await owner.dispose();
+        }
+      },
+      30_000,
+    );
+
+    test(
+      "freebuff_wait without taskId drains two tasks stepwise: the oldest settles first, then the queued one",
+      async () => {
+        openRig("happy", { endDelayMs: 1200 });
+        const owner = await createHarnessSession({
+          extensions: [freebuff],
+          responses: [...runCall(PROMPT), ...runCall(PROMPT2), ...waitCall(), ...waitCall(), ...SPARES],
+        });
+        try {
+          expect(await owner.session.prompt("run one")).toBe(true);
+          expect(lastToolResult(owner, "freebuff_run").details as SubmitOk).toMatchObject({ phase: "working" });
+
+          expect(await owner.session.prompt("run two")).toBe(true);
+          expect(lastToolResult(owner, "freebuff_run").details as SubmitOk).toMatchObject({
+            phase: "queued",
+            position: 1,
+          });
+
+          // The first taskId-less wait parks on the oldest unsettled task (the
+          // active one) and returns at its settle; the younger task stays in
+          // the queue behind it.
+          expect(await owner.session.prompt("wait for the first")).toBe(true);
+          const firstWait = lastToolResult(owner, "freebuff_wait");
+          expect(firstWait.isError).toBe(false);
+          expect(textOf(firstWait)).toBe(ANSWER);
+
+          // The drained queue head is now the oldest unsettled: the second
+          // wait returns its answer once it settles on the same live Instance.
+          expect(await owner.session.prompt("wait for the second")).toBe(true);
+          const secondWait = lastToolResult(owner, "freebuff_wait");
+          expect(secondWait.isError).toBe(false);
+          expect(textOf(secondWait)).toBe(ANSWER.replace(PROMPT, PROMPT2));
+        } finally {
+          await owner.dispose();
+        }
+      },
+      90_000,
+    );
+
+    test(
+      "freebuff_wait from a second session on the owned task is refused not_owner",
+      async () => {
+        openRig("happy", { endDelayMs: 2500 });
+        const owner = await createHarnessSession({
+          extensions: [freebuff],
+          responses: [...runCall(PROMPT), ...SPARES],
+        });
+        const other = await createHarnessSession({
+          extensions: [freebuff],
+          responses: [...waitCall(), ...SPARES],
+        });
+        try {
+          expect(await owner.session.prompt("run it")).toBe(true);
+          const taskId = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+
+          // The second session's wait hits the owner gate while the task is in
+          // flight: a structured refusal naming the owner, and the task itself
+          // is untouched.
+          expect(await other.session.prompt("wait for it")).toBe(true);
+          const wait = lastToolResult(other, "freebuff_wait");
+          expect(wait.isError).toBe(true);
+          expect((wait.details as RejectionDetails).code).toBe("not_owner");
+          expect(textOf(wait)).toContain("owned by main (");
+
+          expect(singleton().progress(taskId, directBinding(owner)).phase).toBe("working");
+        } finally {
+          await other.dispose();
+          await owner.dispose();
+        }
+      },
+      30_000,
+    );
+
+    test(
+      "freebuff_wait naming an unknown task is refused unknown_task",
+      async () => {
+        // No rig: the wait performs no I/O, so no Instance is ever spawned.
+        const owner = await createHarnessSession({
+          extensions: [freebuff],
+          responses: [...waitCall({ taskId: "task-nope" }), ...SPARES],
+        });
+        try {
+          expect(await owner.session.prompt("wait for it")).toBe(true);
+          const wait = lastToolResult(owner, "freebuff_wait");
+          expect(wait.isError).toBe(true);
+          expect((wait.details as RejectionDetails).code).toBe("unknown_task");
+          expect(textOf(wait)).toBe("no freebuff task task-nope");
+        } finally {
+          await owner.dispose();
+        }
+      },
+      20_000,
+    );
+
+    test(
+      "the session's stop signal detaches the working task: the wait reports it and the task still settles",
+      async () => {
+        openRig("happy", { endDelayMs: 2500 });
+        const owner = await createHarnessSession({
+          extensions: [freebuff],
+          responses: [...runCall(PROMPT), ...waitCall(), ...SPARES],
+        });
+        try {
+          expect(await owner.session.prompt("run it")).toBe(true);
+          const taskId = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+
+          // The REAL signal path: the session's controller composes into every
+          // in-flight tool call's signal (AbortSignal.any), and the reason is
+          // exactly the string singleton.interrupt keys on (USER_INTERRUPT_LABEL
+          // is OMP's own Esc label). Stop the call while the stub turn works.
+          let waitInFlight = false;
+          const unsubscribe = owner.session.subscribe(event => {
+            if (event.type === "tool_execution_start" && event.toolName === "freebuff_wait") waitInFlight = true;
+          });
+          const waiting = owner.session.prompt("wait for it");
+          await waitFor(() => waitInFlight);
+          await sleep(250); // the execute's listener registers at tool start; a beat past it
+          await owner.session.abort({ reason: USER_INTERRUPT_LABEL });
+          await waiting;
+          unsubscribe();
+
+          // The wait ends as a normal result: the live progress snapshot plus
+          // the detach note. Not an error, and not a cancel.
+          await waitFor(() => toolResults(owner).some(message => message.toolName === "freebuff_wait"));
+          const wait = lastToolResult(owner, "freebuff_wait");
+          expect(wait.isError).toBe(false);
+          expect(textOf(wait)).toContain(`freebuff task ${taskId} working`);
+          expect(textOf(wait)).toContain(
+            "— stopped: the Task detaches and keeps running; its answer still arrives as an asynchronous push",
+          );
+          expect(wait.details as ProgressDetails).toMatchObject({ taskId, phase: "working" });
+
+          // ADR-0003: the detached Task keeps its Instance and settles on its
+          // own, and the verbatim answer still arrives as the settle push.
+          const pid = singleton().instancePid();
+          expect(pid).not.toBeNull();
+          expect(pidAlive(pid!)).toBe(true);
+          await waitFor(() => pushMessages(owner).length > 0);
+          expect(settlePushOf(pushMessages(owner)[0]!)).toMatchObject({ taskId, ok: true, answer: ANSWER });
+        } finally {
+          await owner.dispose();
+        }
+      },
+      60_000,
+    );
+
+    test(
+      "freebuff_wait feeds live progress snapshots to the session while it blocks",
+      async () => {
+        openRig("happy", { endDelayMs: 8000 });
+        const owner = await createHarnessSession({
+          extensions: [freebuff],
+          responses: [...runCall(PROMPT), ...waitCall({ timeoutSec: 30 }), ...SPARES],
+        });
+        try {
+          expect(await owner.session.prompt("run it")).toBe(true);
+          const taskId = (lastToolResult(owner, "freebuff_run").details as SubmitOk).taskId;
+
+          // Capture the tool's onUpdate feed at the most public point available:
+          // the session's event stream, where a host's UI would read it.
+          let startedAt = 0;
+          let updates = 0;
+          let firstUpdateMs = Number.POSITIVE_INFINITY;
+          let firstText = "";
+          const unsubscribe = owner.session.subscribe(event => {
+            if (event.type === "tool_execution_start" && event.toolName === "freebuff_wait") startedAt = Date.now();
+            if (event.type === "tool_execution_update" && event.toolName === "freebuff_wait") {
+              if (updates === 0) {
+                firstUpdateMs = startedAt === 0 ? Number.POSITIVE_INFINITY : Date.now() - startedAt;
+                const partial = event.partialResult as { content?: { type: string; text?: string }[] };
+                firstText = (partial.content ?? [])
+                  .flatMap(part => (part.type === "text" ? [part.text ?? ""] : []))
+                  .join("");
+              }
+              updates += 1;
+            }
+          });
+
+          expect(await owner.session.prompt("wait for it")).toBe(true);
+          unsubscribe();
+
+          // The ~5 s feed tick: the first snapshot lands within roughly one
+          // cadence of the call starting and carries the live progress shape.
+          expect(updates).toBeGreaterThanOrEqual(1);
+          expect(firstUpdateMs).toBeLessThan(8_500);
+          expect(firstText).toContain(`freebuff task ${taskId} working`);
+
+          // The wait itself still resolves normally at the real settle.
+          const wait = lastToolResult(owner, "freebuff_wait");
+          expect(wait.isError).toBe(false);
+          expect(textOf(wait)).toBe(ANSWER);
+        } finally {
+          await owner.dispose();
+        }
+      },
+      60_000,
+    );
+  });
 
   test(
     "second and further submits enqueue at once; the fifth task is refused as busy",
@@ -1242,7 +1606,7 @@ describe("freebuff tool surface over the singleton (harness tier)", () => {
   // -- /freebuff-doctor: the slash-command surface (#24) ------------------------
 
   test(
-    "freebuff-doctor is a registered command and the tool surface stays the five essentials",
+    "freebuff-doctor is a registered command and the tool surface stays the six essentials",
     async () => {
       const owner = await createHarnessSession({ extensions: [freebuff] });
       try {
@@ -1250,14 +1614,21 @@ describe("freebuff tool surface over the singleton (harness tier)", () => {
           "freebuff-doctor",
         );
         // The host session carries its own built-in tools; the extension's
-        // contribution is exactly the five essentials, and no tool of any
+        // contribution is exactly the six essentials, and no tool of any
         // origin is a doctor (the doctor is the slash command above).
         expect(
           owner.session
             .getActiveToolNames()
             .filter(name => name.startsWith("freebuff_"))
             .sort(),
-        ).toEqual(["freebuff_cancel", "freebuff_progress", "freebuff_run", "freebuff_screen", "freebuff_status"]);
+        ).toEqual([
+          "freebuff_cancel",
+          "freebuff_progress",
+          "freebuff_run",
+          "freebuff_screen",
+          "freebuff_status",
+          "freebuff_wait",
+        ]);
         expect(owner.session.getActiveToolNames().some(name => /doctor/i.test(name))).toBe(false);
       } finally {
         await owner.dispose();

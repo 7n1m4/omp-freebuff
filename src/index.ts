@@ -1,4 +1,4 @@
-// The five-tool async surface over the process-scoped singleton (ADR-0004).
+// The six-tool async surface over the process-scoped singleton (ADR-0004).
 // OMP rebinds this factory per session, and action methods throw while the
 // factory loads, so everything beyond registration happens inside a tool
 // execute or a session_shutdown handler: the runner config is parsed on first
@@ -14,6 +14,13 @@ import type { TurnRunnerOptions } from "./turnRunner";
 import { defaultPluginDir, workspaceDir } from "./workspace";
 
 const RUNNER_JSON_ENV = "PI_FREEBUFF_RUNNER_JSON";
+
+// freebuff_wait's declared bounds (ADR-0008): the tool description, the
+// parameter describe and the clamp all read these, so the numbers are
+// stated exactly once.
+const WAIT_DEFAULT_SEC = 300;
+const WAIT_MIN_SEC = 1;
+const WAIT_MAX_SEC = 1800;
 
 // Memoized on the raw env value: production never changes it, so this parses
 // once per process, while a test rig (a new JSON per test) re-reads the env.
@@ -141,14 +148,58 @@ const progressText = (details: ProgressDetails): string => {
   return `freebuff task ${details.taskId} ${at} (${details.phaseSource}, ${Math.floor(details.elapsedMs / 1000)}s${feed})`;
 };
 
+// One wiring shared by freebuff_run and freebuff_wait: the host stopping the
+// call hands the stop to the singleton (ADR-0003), which detaches a working
+// Task and cancels a queued or submitting one, and the waited task's wait
+// resolves instead of dangling behind the stopped call. The listener outlives
+// the call on purpose, because run returns at the Ack while the Task is still
+// in flight; a late fire is a no-op once nothing is in flight.
+const onStopSignal = (singleton: FreebuffSingleton, binding: OwnerBinding, signal: AbortSignal | undefined): void => {
+  signal?.addEventListener(
+    "abort",
+    () => {
+      try {
+        singleton.interrupt(binding, signal.reason);
+      } catch {
+        // Contained: the stop must never fail the tool call itself.
+      }
+    },
+    { once: true },
+  );
+};
+
+// The one settled-or-flight renderer, shared by the poll and the wait's
+// settled branch: failed is the lockstep failure line the push and the poll
+// both render, done the verbatim answer, anything still in flight the
+// progress snapshot.
+const progressResult = (details: ProgressDetails): AgentToolResult => {
+  if (details.phase === "failed") {
+    return {
+      isError: true,
+      content: [{ type: "text", text: failedLine(details.taskId, details.verdict, details.message) }],
+      details,
+    };
+  }
+  if (details.phase === "done") {
+    return { content: [{ type: "text", text: details.answer ?? "" }], details };
+  }
+  return { content: [{ type: "text", text: progressText(details) }], details };
+};
+
 const statusText = (status: StatusResult & { queue: { depth: number }; activeTask: { taskId: string; phase: string } | null }): string => {
   const parts = [
     `lock ${status.lock.state}`,
     `instance ${status.instancePid ?? "none"}`,
+    ...(status.target !== undefined ? [`target ${status.target}`] : []),
     ...(status.hourMinutesLeft !== undefined ? [`hour ${status.hourMinutesLeft}m left`] : []),
+    ...(status.foreign.live.length > 0
+      ? [`foreign ${status.foreign.live.map((holder) => `pid ${holder.pid} (${holder.model})`).join(", ")}`]
+      : []),
     `queue ${status.queue.depth}`,
     status.activeTask === null ? "no active task" : `active ${status.activeTask.taskId} (${status.activeTask.phase})`,
-    `archive ${status.archive.count} ${status.archive.count === 1 ? "task" : "tasks"}`,
+    `archive ${status.archive.count} ${status.archive.count === 1 ? "task" : "tasks"} (${status.archive.totalBytes} bytes${
+      status.archive.newestId === undefined ? "" : `, newest ${status.archive.newestId}`
+    })`,
     ...(status.abandoned.length > 0 ? [`abandoned ${status.abandoned.length}`] : []),
     ...(status.screenDrift ? ["screen drift"] : []),
   ];
@@ -203,22 +254,16 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
       "Submit one freebuff Task. Returns at the Ack, not the answer: {taskId, phase: \"working\"}, or " +
       "{taskId, phase: \"queued\", position} when another Task is in flight. The answer arrives later as an " +
       "asynchronous push (aside) into this conversation and stays pollable via freebuff_progress. " +
-      "One Task runs at a time, queue depth 4; only the owning session's calls are answered.",
+      "One Task runs at a time, queue depth 4; only the owning session's calls are answered. " +
+      "For long independent Tasks only (multi-file refactor, migration, self-contained feature) - not quick " +
+      "in-session work. Independent Tasks: submit them all in one turn; they run FIFO, one at a time. " +
+      "Esc stops the call, not a working Task (it detaches).",
     parameters: runParams,
     loadMode: "essential",
     execute: async (_toolCallId, { prompt }, signal, _onUpdate, ctx) => {
       const singleton = singletonOf();
       const binding = bindingFor(pi, ctx);
-      // The user stopping the parent's turn aborts this signal (#22): the
-      // singleton decides detach (working) vs cancel (queued/submitting).
-      const onAbort = () => {
-        try {
-          singleton.interrupt(binding, signal?.reason);
-        } catch {
-          // Contained: an interrupt must never fail the tool call itself.
-        }
-      };
-      signal?.addEventListener("abort", onAbort, { once: true });
+      onStopSignal(singleton, binding, signal);
       try {
         const ok = await singleton.submit({
           prompt,
@@ -228,8 +273,6 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
         return { content: [{ type: "text", text: runText(ok) }], details: ok };
       } catch (error) {
         return errorResult(error);
-      } finally {
-        signal?.removeEventListener("abort", onAbort);
       }
     },
   });
@@ -247,18 +290,85 @@ export default async function freebuff(pi: ExtensionAPI): Promise<void> {
     loadMode: "essential",
     execute: async (_toolCallId, { taskId }, _signal, _onUpdate, ctx) => {
       try {
-        const details = singletonOf().progress(taskId, bindingFor(pi, ctx));
-        if (details.phase === "failed") {
-          // Push and poll render the identical failure line: failedLine is the
-          // lockstep formatter both delivery channels share.
-          return { isError: true, content: [{ type: "text", text: failedLine(details.taskId, details.verdict, details.message) }], details };
-        }
-        if (details.phase === "done") {
-          return { content: [{ type: "text", text: details.answer ?? "" }], details };
-        }
-        return { content: [{ type: "text", text: progressText(details) }], details };
+        return progressResult(singletonOf().progress(taskId, bindingFor(pi, ctx)));
       } catch (error) {
         return errorResult(error);
+      }
+    },
+  });
+
+  const waitParams = pi.zod.object({
+    taskId: pi.zod.string().optional().describe("Omit to wait for the oldest unsettled owned Task; or name a task."),
+    timeoutSec: pi.zod.number().optional().describe(`Default ${WAIT_DEFAULT_SEC}; clamped to ${WAIT_MIN_SEC}-${WAIT_MAX_SEC}.`),
+  });
+  pi.registerTool<typeof waitParams>({
+    name: "freebuff_wait",
+    label: "Freebuff wait",
+    description:
+      "Block until a freebuff Task settles: returns the verbatim answer when done, the failure line when failed. " +
+      "Omit taskId to wait for the oldest unsettled owned Task (drains the queue stepwise). Returns a snapshot " +
+      `and 'call again' on timeout (default ${WAIT_DEFAULT_SEC}s, cap ${WAIT_MAX_SEC}s), 'Nothing in flight' when no owned Task is unsettled, ` +
+      "and an already-settled Task's result immediately. Esc stops the call, not a working Task (it detaches). " +
+      "Owner-gated like freebuff_progress.",
+    parameters: waitParams,
+    loadMode: "essential",
+    execute: async (_toolCallId, { taskId, timeoutSec }, signal, onUpdate, ctx) => {
+      const singleton = singletonOf();
+      const binding = bindingFor(pi, ctx);
+      const timeoutMs = Math.min(WAIT_MAX_SEC, Math.max(WAIT_MIN_SEC, timeoutSec ?? WAIT_DEFAULT_SEC)) * 1000;
+      onStopSignal(singleton, binding, signal);
+      // While the call blocks, the same text freebuff_progress renders goes to
+      // the tool view as a snapshot, about every five seconds.
+      const feed = setInterval(() => {
+        try {
+          onUpdate?.({ content: [{ type: "text", text: progressText(singleton.progress(taskId, binding)) }] });
+        } catch {
+          // A snapshot that cannot be composed (the task left the flight)
+          // never fails the wait.
+        }
+      }, 5_000);
+      try {
+        const outcome = await singleton.waitOne(binding, taskId, timeoutMs);
+        if (outcome.kind === "none") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Nothing in flight: no queued or working freebuff Task owned by this session is unsettled.",
+              },
+            ],
+            details: outcome,
+          };
+        }
+        if (outcome.kind === "detached" || outcome.kind === "cancelled" || outcome.kind === "disposed") {
+          const { details } = outcome;
+          // disposed is the teardown snapshot, claiming neither a detach nor
+          // a Cancel: only the extension going away ends a wait that way.
+          const note =
+            outcome.kind === "detached"
+              ? "the Task detaches and keeps running; its answer still arrives as an asynchronous push"
+              : outcome.kind === "cancelled"
+                ? "the Task left the flight"
+                : "the freebuff instance shut down while the Task was in flight";
+          return { content: [{ type: "text", text: `${progressText(details)} — stopped: ${note}` }], details };
+        }
+        if (outcome.kind === "timeout") {
+          const { details } = outcome;
+          return {
+            content: [
+              {
+                type: "text",
+                text: `${progressText(details)} Still settling — call freebuff_wait again to keep waiting.`,
+              },
+            ],
+            details,
+          };
+        }
+        return progressResult(outcome.details);
+      } catch (error) {
+        return errorResult(error);
+      } finally {
+        clearInterval(feed);
       }
     },
   });

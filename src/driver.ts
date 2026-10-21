@@ -9,7 +9,7 @@ import { SCREEN_COLS, SCREEN_ROWS } from "./config";
 import { CliTerminalScreen, classifyScreen } from "./protocol/screen";
 import type { ScreenRead } from "./protocol/screen";
 import { writeScreenDump } from "./protocol/screenDump";
-import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, newestChatDir, readChats, renderedBlockCount, stepFeedSince, type StepFeed } from "./protocol/chatStore";
+import { byNewest, detectTurnEnd, hasLineSince, lineMentionsPrompt, logSince, newestChatDir, readChats, renderedBlockCount, stepFeedSince, turnDirs, type StepFeed } from "./protocol/chatStore";
 import type { TurnBaseline, TurnEndResult } from "./protocol/chatStore";
 import { DEFAULT_PRESS_THROTTLE_MS, awaitSettled } from "./settle";
 import type { SettleIo, SettleOutcome } from "./settle";
@@ -312,12 +312,11 @@ export class FreebuffDriver implements DriverLike {
   }
 
   // The baseline dir plus every dir newer than it (freebuff rotates dirs per
-  // chat); older dirs never carry this Turn's lines.
+  // chat); older dirs never carry this Turn's lines. The baseline is read from
+  // its byte, the newer dirs from zero.
   ackSince(baseline: TurnBaseline, prompt: string): boolean {
-    const snaps = this.chats();
-    const base = snaps.find((snap) => snap.dirName === baseline.dirName);
-    for (const snap of snaps) {
-      if (base !== undefined && snap !== base && byNewest(snap, base) > 0) continue;
+    const { base, dirs } = turnDirs(this.chats(), baseline);
+    for (const snap of dirs) {
       if (hasLineSince(snap, snap === base ? baseline.logBytes : 0, (json) => lineMentionsPrompt(json, prompt))) return true;
     }
     return false;
@@ -335,17 +334,16 @@ export class FreebuffDriver implements DriverLike {
     return renderedBlockCount(this.options.freebuffConfigDir, this.options.workspace, baseline.dirName);
   }
 
-  // The archive's verbatim chat log: the baseline dir plus every dir newer than
-  // it, which is the set ackSince scans because freebuff rotates dirs per chat,
-  // oldest first; with no baseline yet, the whole store.
+  // The archive's verbatim slice of this Turn's chat log: the baseline dir cut
+  // at the baseline byte, plus every dir newer than it, oldest first. freebuff
+  // rotates dirs per chat, so the baseline's own prefix and older dirs belong
+  // to earlier Turns; with no baseline yet, the whole store.
   chatLog(baseline: TurnBaseline | null): string {
-    const snaps = this.chats();
-    const base = baseline === null ? undefined : snaps.find((snap) => snap.dirName === baseline.dirName);
-    return snaps
-      .filter((snap) => base === undefined || snap === base || byNewest(snap, base) < 0)
-      .sort(byNewest)
-      .reverse()
-      .map((snap) => snap.logText)
+    const from = baseline?.logBytes ?? 0;
+    const { base, dirs } = turnDirs(this.chats(), baseline);
+    return dirs
+      .sort((a, b) => byNewest(b, a))
+      .map((snap) => logSince(snap, snap === base ? from : 0))
       .join("");
   }
 

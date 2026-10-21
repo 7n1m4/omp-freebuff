@@ -1,0 +1,48 @@
+[2J[H  Mysterious Name — WaitOutcome's "interrupted" carries three distinct glossary events: detach (working), Cancel (queued dequeue), and dispose() teardown (
+  waiter.resolve({ kind: "interrupted", … }) — nothing was interrupted). A teardown is an abandon/teardown, not a Wait ending.
+  Speculative Generality — private readonly waits = new Map<string, Set<Waiter>>() plus dropWaiter: multi-waiter fan-out exists only for one test; ADR-0008/
+  README describe one Wait call per Owner session. A single Waiter per task would do.
+  Primitive Obsession — the bound Math.min(1800, Math.max(1, timeoutSec ?? 300)) * 1000 restates 300/1–1800 as bare literals in code, and again in README,
+  SKILL.md and the tool description (also Duplicated Code of the wait contract across those three docs).
+  Mysterious Name — tests/helpers/guards.ts: unwrap hides that it throws on a rejected guard.
+  Drift — skills/freebuff/SKILL.md: disable-model-invocation: true while the frontmatter description and body still say "use when… read this before deciding
+  between freebuff_run and doing the work yourself"; README still says the host "loads on demand".
+  EOF
+  clean-check-done
+  391
+
+  • Thinking
+    391 words in the body (headings included), under 400. Git status clean (no output before "clean-check-done") — confirms read-only. Verify a few
+    factual claims I made, to be safe: 1. README Pointers list omits 0008 — confirmed from read (0001–0007 listed, ends "ADR-0007 the directory-line
+    guard is dropped."). Yes. 2. `aborted: ${note}` text — the diff shows `— aborted: ${note}`. Yes. 3. `aborted:` in index.ts — yes. 4. SKILL
+    description text — yes. Report delivered; no files changed. Final concise answer.
+
+  Deliverable complete: a read-only report, no repo changes ( git status --porcelain  empty).
+
+  Verified against the brief
+  - Diff scope read: all 12 files in  git diff c6c4ada...HEAD , plus AGENTS.md, CONTEXT.md, README.md, ADRs 0001–0008,  docs/agents/{domain,issue-tracker,
+  triage-labels}.md ,  skills/freebuff/SKILL.md ,  tests/fixtures/screen/AGENTS.md .
+  - Findings grounded in quoted hunks/lines: ADR-0006 "twice by design" vs the new third channel (unamended); CONTEXT Cancel's avoided words ("abort"/
+  "interrupt") leaking into  src/index.ts ; README § Pointers still listing only 0001–0007; plus seven baseline smells (duplicated abort wiring and outcome
+  cascade, duplicated  dispose / resolveWaits  loop,  "interrupted"  overloaded for teardown,  Set<Waiter>  generality, bound literals restated across code
+  and three docs,  unwrap  name, SKILL frontmatter/body drift).
+  - Format/length: per-file, hard vs judgement labelled, 391 words (< 400), all standards cited by file + rule.
+  - Tooling-enforced checks (typecheck/tests) deliberately not run, per the brief — so no pass/fail claims on them.                                            ▄
+  - No repo edits, stages or commits; the only command output came from  git  and a  /tmp -free heredoc word count.                                            █
+                                                                                                                                                               █
+  Limitations: findings are judgement-based, not mechanically enforced; I did not verify runtime behaviour of  freebuff_wait  (out of scope for the            █
+  standards axis).                                                                                                                                             █
+                                                                                                                                             ⎘ • 1m 19s • △▽   █
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ Our Discord                                                                                                                                             Ad │
+ │ Say hi, get 15 Freebucks                                                                                                                                   │
+ │  Join  freebuff.com                                                                                                                                        │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ 59m left · 66.4K (6%)                                                                                                                           ✕ End session
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                                                              │
+│  ▍Enter a coding task or / for commands                                                                                                                      │
+│                                                                                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash 10/17 • high · ~\AppData\Local\freebuff-plugin\freebuff-ws · /model to change · Chat: New chat
+ ← for history · ? for help
